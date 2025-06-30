@@ -1,7 +1,8 @@
-
 # 🎙️ Mantra Match – Real-Time Mantra Recognition Android App
 
 This Android app uses **real-time audio processing** with [TarsosDSP](https://github.com/JorenSix/TarsosDSP) to recognize when a spoken mantra matches a previously recorded version. It applies **MFCC (Mel-Frequency Cepstral Coefficients)** and **cosine similarity** to count accurate repetitions of the mantra and triggers an alarm when a match limit is reached.
+
+---
 
 ## ✨ Features
 
@@ -23,14 +24,14 @@ This Android app uses **real-time audio processing** with [TarsosDSP](https://gi
 
 ## 🏗️ Architecture Overview
 
-| Layer         | Technology                      |
-|---------------|----------------------------------|
-| UI            | Jetpack Compose                 |
+| Layer         | Technology                            |
+|---------------|--------------------------------------|
+| UI            | Jetpack Compose                      |
 | Audio Input   | AudioRecord + AndroidAudioInputStream |
-| DSP/Features  | TarsosDSP MFCC extraction       |
+| DSP/Features  | TarsosDSP MFCC extraction            |
 | Storage       | Internal app storage (`/files/mantras`) |
-| Comparison    | Cosine similarity (custom logic)|
-| Permissions   | Android `ActivityResultContracts` |
+| Comparison    | Cosine similarity (custom logic)     |
+| Permissions   | Android `ActivityResultContracts`    |
 
 ---
 
@@ -52,7 +53,7 @@ This Android app uses **real-time audio processing** with [TarsosDSP](https://gi
     - A `.wav` file is created and saved in internal storage
 
 2. **Matching in Real-Time**
-    - Select a mantra from dropdown
+    - Select a mantra from the dropdown
     - Enter a match count threshold (e.g., 5)
     - Press `START`
     - App listens and extracts MFCCs live
@@ -77,18 +78,16 @@ This Android app uses **real-time audio processing** with [TarsosDSP](https://gi
 
 ## 📁 File Structure
 
-📂 app/
-┣ 📄 MainActivity.kt # Core logic
-┣ 📄 MainScreen.kt # Jetpack Compose UI
-┣ 📂 ui/theme # Material Theme
-┣ 📂 libs/
-┃ ┗ 📦 TarsosDSP-Android-latest.jar
-┣ 📂 files/
-┃ ┗ 🎵 Saved mantra .wav files
-
-yaml
-Copy
-Edit
+```
+app/
+ ┣ MainActivity.kt         # Core logic
+ ┣ MainScreen.kt           # Jetpack Compose UI
+ ┣ ui/theme/               # Material Theme
+ ┣ libs/
+ ┃ ┗ TarsosDSP-Android-latest.jar
+ ┣ files/
+ ┃ ┗ 🎵 Saved mantra .wav files
+```
 
 ---
 
@@ -98,48 +97,48 @@ Ensure the app has the following permissions:
 
 ```xml
 <uses-permission android:name="android.permission.RECORD_AUDIO" />
+```
 App requests runtime microphone access via ActivityResultContracts.RequestPermission().
 
-🛠️ Setup & Build
-🔧 Requirements
-Android Studio Giraffe or later
+---
 
-Android SDK 28+
+## 🛠️ Setup & Build
 
-Kotlin 1.9+
+### 🔧 Requirements
+- Android Studio Giraffe or later
+- Android SDK 28+
+- Kotlin 1.9+
+- TarsosDSP JAR (placed inside `libs/` folder)
 
-TarsosDSP JAR (placed inside libs/ folder)
+### ▶️ Build Instructions
+1. Clone the repository
+2. Open in Android Studio
+3. Sync Gradle
+4. Run on a real device (recommended)
 
-▶️ Build Instructions
-Clone the repository
+---
 
-Open in Android Studio
+## 🚨 Known Limitations
 
-Sync Gradle
+- Only one mantra is matched at a time
+- MFCC comparison uses only the first frame for simplicity
+- No automatic silence detection or speech segmentation
+- Cosine similarity threshold is fixed (> 0.9)
 
-Run on a real device (recommended)
+---
 
-🚨 Known Limitations
-Only one mantra is matched at a time
+## 🧩 Possible Improvements
 
-MFCC comparison uses only the first frame for simplicity
+- Use averaged MFCC vectors for more robust matching
+- Support multiple simultaneous mantra matching
+- Visual waveform or pitch feedback in real-time
+- ViewModel integration for clean state management
+- Export/import mantra files externally
 
-No automatic silence detection or speech segmentation
+---
 
-Cosine similarity threshold is fixed (> 0.9)
+## 👨‍💻 Author
 
-🧩 Possible Improvements
- Use averaged MFCC vectors for more robust matching
-
- Support multiple simultaneous mantra matching
-
- Visual waveform or pitch feedback in real-time
-
- ViewModel integration for clean state management
-
- Export/import mantra files externally
-
-👨‍💻 Author
-Developed by [Your Name]
+Developed by [Likhith]
 
 Feel free to replace this with a link to your portfolio or GitHub profile.
