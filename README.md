@@ -77,3 +77,69 @@ This Android app uses **real-time audio processing** with [TarsosDSP](https://gi
 
 ## 📁 File Structure
 
+📂 app/
+┣ 📄 MainActivity.kt # Core logic
+┣ 📄 MainScreen.kt # Jetpack Compose UI
+┣ 📂 ui/theme # Material Theme
+┣ 📂 libs/
+┃ ┗ 📦 TarsosDSP-Android-latest.jar
+┣ 📂 files/
+┃ ┗ 🎵 Saved mantra .wav files
+
+yaml
+Copy
+Edit
+
+---
+
+## ✅ Permissions
+
+Ensure the app has the following permissions:
+
+```xml
+<uses-permission android:name="android.permission.RECORD_AUDIO" />
+App requests runtime microphone access via ActivityResultContracts.RequestPermission().
+
+🛠️ Setup & Build
+🔧 Requirements
+Android Studio Giraffe or later
+
+Android SDK 28+
+
+Kotlin 1.9+
+
+TarsosDSP JAR (placed inside libs/ folder)
+
+▶️ Build Instructions
+Clone the repository
+
+Open in Android Studio
+
+Sync Gradle
+
+Run on a real device (recommended)
+
+🚨 Known Limitations
+Only one mantra is matched at a time
+
+MFCC comparison uses only the first frame for simplicity
+
+No automatic silence detection or speech segmentation
+
+Cosine similarity threshold is fixed (> 0.9)
+
+🧩 Possible Improvements
+ Use averaged MFCC vectors for more robust matching
+
+ Support multiple simultaneous mantra matching
+
+ Visual waveform or pitch feedback in real-time
+
+ ViewModel integration for clean state management
+
+ Export/import mantra files externally
+
+👨‍💻 Author
+Developed by [Your Name]
+
+Feel free to replace this with a link to your portfolio or GitHub profile.
