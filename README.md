@@ -1,3 +1,4 @@
+
 # 🎙️ Mantra Match – Real-Time Mantra Recognition Android App
 
 This Android app uses **real-time audio processing** with [TarsosDSP](https://github.com/JorenSix/TarsosDSP) to recognize when a spoken mantra matches a previously recorded version. It applies **MFCC (Mel-Frequency Cepstral Coefficients)** and **cosine similarity** to count accurate repetitions of the mantra and triggers an alarm when a match limit is reached.
@@ -76,4 +77,3 @@ This Android app uses **real-time audio processing** with [TarsosDSP](https://gi
 
 ## 📁 File Structure
 
-  
