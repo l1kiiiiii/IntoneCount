@@ -139,6 +139,6 @@ App requests runtime microphone access via ActivityResultContracts.RequestPermis
 
 ## 👨‍💻 Author
 
-Developed by [Likhith]
+Developed by LIKHITH
 
 Feel free to replace this with a link to your portfolio or GitHub profile.
