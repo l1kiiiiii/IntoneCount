@@ -19,6 +19,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -28,10 +29,11 @@ fun MainScreen(
     onRecordMantraClick: () -> Unit,
     onStartStopClick: (String, String) -> Unit,
     matchCount: Int,
-    processingStatus: String
+    processingStatus: String,
+    matchLimitText: String, // Use the hoisted state
+    onMatchLimitTextChange: (String) -> Unit // Update to accept new text value
 ) {
     var selectedMantra by remember { mutableStateOf(mantras.firstOrNull() ?: "") }
-    var matchLimit by remember { mutableStateOf("") }
     var isMenuExpanded by remember { mutableStateOf(false) }
 
     Column(
@@ -76,8 +78,8 @@ fun MainScreen(
 
         // Match Limit Input
         OutlinedTextField(
-            value = matchLimit,
-            onValueChange = { matchLimit = it },
+            value = matchLimitText, // Use hoisted matchLimitText
+            onValueChange = onMatchLimitTextChange, // Pass new value to parent
             label = { Text("Match Limit", fontSize = 14.sp) },
             modifier = Modifier.fillMaxWidth(),
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
@@ -85,9 +87,9 @@ fun MainScreen(
 
         // Start/Stop Button
         Button(
-            onClick = { onStartStopClick(selectedMantra, matchLimit) },
+            onClick = { onStartStopClick(selectedMantra, matchLimitText) }, // Pass matchLimitText
             modifier = Modifier.align(Alignment.CenterHorizontally),
-            enabled = selectedMantra.isNotEmpty() && matchLimit.isNotEmpty()
+            enabled = selectedMantra.isNotEmpty() && matchLimitText.isNotEmpty()
         ) {
             Text(if (processingStatus == "Listening for mantra...") "STOP" else "START", fontSize = 16.sp)
         }
@@ -106,4 +108,17 @@ fun MainScreen(
             modifier = Modifier.align(Alignment.CenterHorizontally)
         )
     }
+}
+@Preview
+@Composable
+fun MainScreenPreview() {
+    MainScreen(
+        mantras = listOf("Om Namah Shivaya", "Gayatri Mantra", "Mahamrityunjaya"),
+        onRecordMantraClick = {},
+        onStartStopClick = { _, _ -> },
+        matchCount = 3,
+        processingStatus = "Listening for mantra...",
+        matchLimitText = "5",
+        onMatchLimitTextChange = {}
+    )
 }
