@@ -1,21 +1,9 @@
 package com.example.mkproject.ui.theme
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.Button
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
@@ -23,102 +11,166 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
     mantras: List<String>,
+    matchLimitText: String,
+    onMatchLimitTextChange: (String) -> Unit,
     onRecordMantraClick: () -> Unit,
     onStartStopClick: (String, String) -> Unit,
+    onStopRecordingClick: () -> Unit,
     matchCount: Int,
-    processingStatus: String,
-    matchLimitText: String, // Use the hoisted state
-    onMatchLimitTextChange: (String) -> Unit // Update to accept new text value
+    processingStatus: String
 ) {
     var selectedMantra by remember { mutableStateOf(mantras.firstOrNull() ?: "") }
     var isMenuExpanded by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf("") }
 
-    Column(
-        modifier = Modifier.padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        // Record New Mantra Button
-        Button(
-            onClick = onRecordMantraClick,
-            modifier = Modifier.align(Alignment.CenterHorizontally)
-        ) {
-            Text("Record New Mantra", fontSize = 16.sp)
-        }
-
-        // Mantra Selection Dropdown
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text("Selected Mantra: ", fontSize = 16.sp)
-            Button(
-                onClick = { isMenuExpanded = true },
-                modifier = Modifier.weight(1f)
-            ) {
-                Text(selectedMantra.ifEmpty { "Select Mantra" }, fontSize = 16.sp)
-            }
-            DropdownMenu(
-                expanded = isMenuExpanded,
-                onDismissRequest = { isMenuExpanded = false }
-            ) {
-                mantras.forEach { mantra ->
-                    DropdownMenuItem(
-                        text = { Text(mantra, fontSize = 16.sp) },
-                        onClick = {
-                            selectedMantra = mantra
-                            isMenuExpanded = false
-                        }
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Text(
+                        "Mantra Recognition App",
+                        fontSize = 20.sp
                     )
                 }
+            )
+        },
+        content = { innerPadding ->
+            Column(
+                modifier = Modifier
+                    .padding(innerPadding)
+                    .padding(horizontal = 24.dp, vertical = 16.dp)
+                    .fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Record New Mantra Button
+                Button(
+                    onClick = {
+                        errorMessage = ""
+                        onRecordMantraClick()
+                    },
+                    enabled = processingStatus != "Listening for mantra..." && processingStatus != "Recording mantra...",
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Record New Mantra", fontSize = 16.sp)
+                }
+
+                // Stop Recording Button (visible when recording)
+                if (processingStatus == "Recording mantra...") {
+                    Button(
+                        onClick = {
+                            errorMessage = ""
+                            onStopRecordingClick()
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Stop Recording", fontSize = 16.sp)
+                    }
+                }
+
+                // Mantra Selection Dropdown
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        "Select Mantra",
+                        fontSize = 14.sp,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                    Box {
+                        Button(
+                            onClick = { isMenuExpanded = true },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(selectedMantra.ifEmpty { "Choose..." }, fontSize = 16.sp)
+                        }
+
+                        DropdownMenu(
+                            expanded = isMenuExpanded,
+                            onDismissRequest = { isMenuExpanded = false }
+                        ) {
+                            mantras.forEach { mantra ->
+                                DropdownMenuItem(
+                                    text = { Text(mantra, fontSize = 16.sp) },
+                                    onClick = {
+                                        selectedMantra = mantra
+                                        isMenuExpanded = false
+                                        errorMessage = ""
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Match Limit Input
+                OutlinedTextField(
+                    value = matchLimitText,
+                    onValueChange = {
+                        onMatchLimitTextChange(it)
+                        errorMessage = ""
+                    },
+                    label = { Text("Match Limit", fontSize = 14.sp) },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    isError = matchLimitText.isNotEmpty() && matchLimitText.toIntOrNull()?.let { it <= 0 } == true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                // Error Message for Invalid Input
+                if (errorMessage.isNotEmpty()) {
+                    Text(
+                        text = errorMessage,
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 14.sp
+                    )
+                }
+
+                // Start/Stop Button
+                Button(
+                    onClick = {
+                        if (selectedMantra.isEmpty()) {
+                            errorMessage = "Please select a mantra."
+                            return@Button
+                        }
+                        if (matchLimitText.isEmpty() || matchLimitText.toIntOrNull()?.let { it <= 0 } == true) {
+                            errorMessage = "Please enter a valid match limit (positive number)."
+                            return@Button
+                        }
+                        errorMessage = ""
+                        onStartStopClick(selectedMantra, matchLimitText)
+                    },
+                    enabled = processingStatus != "Recording mantra...",
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        if (processingStatus == "Listening for mantra...") "STOP" else "START",
+                        fontSize = 16.sp
+                    )
+                }
+
+                // Match Count Display
+                Text("Match Count: $matchCount", fontSize = 18.sp)
+
+                // Processing Status
+                Text("Status: $processingStatus", fontSize = 16.sp)
             }
         }
-
-        // Match Limit Input
-        OutlinedTextField(
-            value = matchLimitText, // Use hoisted matchLimitText
-            onValueChange = onMatchLimitTextChange, // Pass new value to parent
-            label = { Text("Match Limit", fontSize = 14.sp) },
-            modifier = Modifier.fillMaxWidth(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-        )
-
-        // Start/Stop Button
-        Button(
-            onClick = { onStartStopClick(selectedMantra, matchLimitText) }, // Pass matchLimitText
-            modifier = Modifier.align(Alignment.CenterHorizontally),
-            enabled = selectedMantra.isNotEmpty() && matchLimitText.isNotEmpty()
-        ) {
-            Text(if (processingStatus == "Listening for mantra...") "STOP" else "START", fontSize = 16.sp)
-        }
-
-        // Match Count Display
-        Text(
-            text = "Match Count: $matchCount",
-            fontSize = 18.sp,
-            modifier = Modifier.align(Alignment.CenterHorizontally)
-        )
-
-        // Processing Status
-        Text(
-            text = "Status: $processingStatus",
-            fontSize = 16.sp,
-            modifier = Modifier.align(Alignment.CenterHorizontally)
-        )
-    }
+    )
 }
-@Preview
+
+@Preview(showSystemUi = true)
 @Composable
 fun MainScreenPreview() {
     MainScreen(
         mantras = listOf("Om Namah Shivaya", "Gayatri Mantra", "Mahamrityunjaya"),
+        matchLimitText = "5",
+        onMatchLimitTextChange = {},
         onRecordMantraClick = {},
         onStartStopClick = { _, _ -> },
+        onStopRecordingClick = {},
         matchCount = 3,
-        processingStatus = "Listening for mantra...",
-        matchLimitText = "5",
-        onMatchLimitTextChange = {}
+        processingStatus = "Listening for mantra..."
     )
 }
