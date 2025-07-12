@@ -18,9 +18,10 @@ This Android app uses **real-time audio processing** with [TarsosDSP](https://gi
 
 ## 📸 Screenshots
 
-> _You can add screenshots here if available_
+![WhatsApp Image 2025-07-12 at 16 49 47_0d7493ca](https://github.com/user-attachments/assets/aad92b66-dcc9-4d74-a7c9-974dc2d66c57)
 
 ---
+
 
 ## 🏗️ Architecture Overview
 
