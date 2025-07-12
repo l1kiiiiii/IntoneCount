@@ -40,13 +40,13 @@ android {
         compose = true
     }
 
-    // sourceSets block for jniLibs
     sourceSets {
         getByName("main") {
             jniLibs.srcDirs("libs")
         }
     }
 }
+
 
 dependencies {
     implementation(libs.androidx.core.ktx)
@@ -65,6 +65,6 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
 
-    // Include TarsosDSP JAR file from libs directory
+    // Use local TarsosDSP JAR
     implementation(files("libs/TarsosDSP-Android-latest.jar"))
 }

@@ -57,19 +57,49 @@ class MainActivity : ComponentActivity() {
     private var audioRecord: AudioRecord? = null
     private var audioDispatcher: AudioDispatcher? = null
     private var dispatcherThread: Thread? = null
-    private var recordingThread: Thread? = null // For recordMantra
-    private val stopRecordingFlag = AtomicBoolean(false) // To stop recording
+    private var recordingThread: Thread? = null
+    private val stopRecordingFlag = AtomicBoolean(false)
 
     // Constants for audio processing
     private val sampleRate = 16000
-    private val recordingBufferSize: Int by lazy {
-        AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT) * 2
+    private val audioFormatEncoding = AudioFormat.ENCODING_PCM_16BIT
+    private val audioChannelConfig = AudioFormat.CHANNEL_IN_MONO
+
+    // Buffer size for AudioRecord
+    private val audioRecordMinBufferSize: Int by lazy {
+        val size = AudioRecord.getMinBufferSize(sampleRate, audioChannelConfig, audioFormatEncoding)
+        if (size <= 0) {
+            Log.e("MainActivity", "Invalid min buffer size: $size, defaulting to 4096")
+            4096
+        } else {
+            size
+        }
+    }
+    private val actualRecordingBufferSize: Int by lazy {
+        val minSize = audioRecordMinBufferSize * 2
+        val powerOfTwo = listOf(1024, 2048, 4096, 8192).firstOrNull { it >= minSize } ?: 4096
+        Log.d("MainActivity", "AudioRecord buffer size: min=$audioRecordMinBufferSize, chosen=$powerOfTwo")
+        powerOfTwo
     }
 
+    // TarsosDSP buffer sizes (power of 2 for FFT)
+    private val tarsosProcessingBufferSizeSamples = 2048
+    private val tarsosProcessingOverlapSamples = tarsosProcessingBufferSizeSamples / 2
+
     // Storage and permissions
-    private val storageDir: File by lazy { File(filesDir, "mantras").also { if (!it.exists()) it.mkdirs() } }
+    private val storageDir: File by lazy {
+        File(filesDir, "mantras").also {
+            if (!it.exists() && !it.mkdirs()) {
+                Log.e("MainActivity", "Failed to create storage directory: ${it.absolutePath}")
+                runOnUiThread {
+                    Toast.makeText(this, "Failed to create storage directory.", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
     private val savedMantras: List<String>
-        get() = storageDir.listFiles()?.filter { it.extension == "wav" }?.map { it.nameWithoutExtension } ?: emptyList()
+        get() = storageDir.listFiles()?.filter { it.extension == "wav" }?.map { it.nameWithoutExtension }?.sorted() ?: emptyList()
+
     private val recordAudioLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
             if (!isGranted) showPermissionAlert()
@@ -86,8 +116,8 @@ class MainActivity : ComponentActivity() {
                     mantras = savedMantras,
                     matchLimitText = matchLimitText,
                     onMatchLimitTextChange = { matchLimitText = it },
-                    onRecordMantraClick = { recordMantra() },
-                    onStartStopClick = { targetMantraName, _ ->
+                    onRecordMantraClick = { mantraName -> recordMantra(mantraName) },
+                    onStartStopClick = { targetMantraName, matchLimitText ->
                         if (isRecognizingMantra) {
                             stopListening()
                         } else {
@@ -106,7 +136,8 @@ class MainActivity : ComponentActivity() {
                             startListeningWithDelay()
                         }
                     },
-                    onStopRecordingClick = { stopRecordingMantra() }, // New callback for stopping recording
+                    onStopRecordingClick = { stopRecordingMantra() },
+                    onDeleteMantraClick = { mantraName -> deleteMantra(mantraName) },
                     matchCount = matchCount.get(),
                     processingStatus = when {
                         isRecognizingMantra -> "Listening for mantra..."
@@ -123,85 +154,140 @@ class MainActivity : ComponentActivity() {
     @SuppressLint("MissingPermission")
     private fun startListeningWithDelay() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            Log.w("MainActivity", "Microphone permission missing")
             Toast.makeText(this, "Microphone permission required.", Toast.LENGTH_SHORT).show()
             isRecognizingMantra = false
             return
         }
 
         Handler(Looper.getMainLooper()).postDelayed({
-            if (!isRecognizingMantra) return@postDelayed
+            if (!isRecognizingMantra) {
+                Log.d("MainActivity", "Recognition cancelled before start")
+                return@postDelayed
+            }
 
-            if (recordingBufferSize <= 0) {
-                Log.e("MainActivity", "Invalid buffer size for recording: $recordingBufferSize")
-                Toast.makeText(this, "Invalid buffer size for recording.", Toast.LENGTH_SHORT).show()
+            if (actualRecordingBufferSize <= 0 || actualRecordingBufferSize % 2 != 0) {
+                Log.e("MainActivity", "Invalid AudioRecord buffer size: $actualRecordingBufferSize")
+                Toast.makeText(this, "Invalid audio buffer configuration.", Toast.LENGTH_SHORT).show()
                 isRecognizingMantra = false
                 return@postDelayed
             }
-            audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                sampleRate,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                recordingBufferSize
-            )
-            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                Log.e("MainActivity", "Failed to initialize audio recording. State: ${audioRecord?.state}")
-                Toast.makeText(this, "Failed to initialize audio recording.", Toast.LENGTH_SHORT).show()
-                isRecognizingMantra = false
-                audioRecord?.release()
-                audioRecord = null
-                return@postDelayed
-            }
-            val tarsosDspAudioFormat = TarsosDSPAudioFormat(sampleRate.toFloat(), 16, 1, true, false)
-            val audioStream = AndroidAudioInputStream(audioRecord!!, tarsosDspAudioFormat)
-            audioDispatcher = AudioDispatcher(audioStream, recordingBufferSize / 2, recordingBufferSize / 4)
-            val mfcc = MFCC(
-                sampleRate,
-                (recordingBufferSize / 2).toFloat(),
-                13,
-                40,
-                20f,
-                4000f
-            )
-            audioDispatcher?.addAudioProcessor(mfcc)
-            audioDispatcher?.addAudioProcessor(object : be.tarsos.dsp.AudioProcessor {
-                override fun process(audioEvent: AudioEvent): Boolean {
-                    val mfccs = mfcc.mfcc
-                    lastProcessedAudio = mfccs.copyOf()
-                    if (targetMantra.isNotEmpty() && referenceMFCCs.containsKey(targetMantra)) {
-                        val refMfccList = referenceMFCCs[targetMantra]
-                        if (refMfccList != null && refMfccList.isNotEmpty()) {
-                            val similarity = calculateCosineSimilarity(mfccs, refMfccList[0])
-                            if (similarity > 0.9) {
-                                val currentCount = matchCount.incrementAndGet()
-                                Log.d(
-                                    "MainActivity",
-                                    "Match detected, count: $currentCount, Similarity: $similarity"
-                                )
-                                if (currentCount >= matchLimit) {
-                                    runOnUiThread { triggerAlarm() }
+
+            try {
+                audioRecord = AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    sampleRate,
+                    audioChannelConfig,
+                    audioFormatEncoding,
+                    actualRecordingBufferSize
+                )
+                if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+                    Log.e("MainActivity", "AudioRecord initialization failed. State: ${audioRecord?.state}")
+                    Toast.makeText(this, "Failed to initialize audio recording.", Toast.LENGTH_SHORT).show()
+                    isRecognizingMantra = false
+                    audioRecord?.release()
+                    audioRecord = null
+                    return@postDelayed
+                }
+
+                Log.d("MainActivity", "AudioRecord initialized: sampleRate=$sampleRate, bufferSize=$actualRecordingBufferSize, state=${audioRecord?.state}")
+
+                val tarsosDspAudioFormat = TarsosDSPAudioFormat(sampleRate.toFloat(), 16, 1, true, false)
+                val audioStream = AndroidAudioInputStream(audioRecord!!, tarsosDspAudioFormat)
+                Log.d("MainActivity", "AndroidAudioInputStream initialized")
+
+                Log.d("MainActivity", "Audio stream frame length: ${audioStream.getFrameLength()}")
+
+                audioDispatcher = AudioDispatcher(
+                    audioStream,
+                    tarsosProcessingBufferSizeSamples,
+                    tarsosProcessingOverlapSamples
+                )
+
+                val mfcc = MFCC(
+                    sampleRate,
+                    tarsosProcessingBufferSizeSamples.toFloat(),
+                    13,
+                    40,
+                    20f,
+                    4000f // Safer max frequency
+                )
+                audioDispatcher?.addAudioProcessor(mfcc)
+                audioDispatcher?.addAudioProcessor(object : be.tarsos.dsp.AudioProcessor {
+                    override fun process(audioEvent: AudioEvent): Boolean {
+                        val mfccs = mfcc.mfcc
+                        if (mfccs.isEmpty() || mfccs.size != 13) {
+                            Log.w("MainActivity", "Invalid MFCCs: size=${mfccs.size}")
+                            return true
+                        }
+                        lastProcessedAudio = mfccs.copyOf()
+                        if (targetMantra.isNotEmpty() && referenceMFCCs.containsKey(targetMantra)) {
+                            val refMfccList = referenceMFCCs[targetMantra]
+                            if (refMfccList != null && refMfccList.isNotEmpty()) {
+                                val similarity = calculateCosineSimilarity(mfccs, refMfccList[0])
+                                if (similarity > 0.9) {
+                                    val currentCount = matchCount.incrementAndGet()
+                                    Log.d("MainActivity", "Match detected, count: $currentCount, Similarity: $similarity")
+                                    if (currentCount >= matchLimit) {
+                                        runOnUiThread { triggerAlarm() }
+                                    }
                                 }
+                            } else {
+                                Log.w("MainActivity", "No reference MFCCs for $targetMantra")
                             }
                         }
+                        return true
                     }
-                    return true
+                    override fun processingFinished() {
+                        Log.d("MainActivity", "AudioProcessor finished")
+                    }
+                })
+
+                audioRecord?.startRecording()
+                if (audioRecord?.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                    Log.e("MainActivity", "AudioRecord failed to start recording. State: ${audioRecord?.recordingState}")
+                    throw IllegalStateException("AudioRecord not recording")
                 }
-                override fun processingFinished() {}
-            })
-            audioRecord?.startRecording()
-            dispatcherThread = Thread {
-                try {
-                    audioDispatcher?.run()
-                } catch (e: Exception) {
-                    Log.e("MainActivity", "Error in AudioDispatcher thread", e)
-                    runOnUiThread {
-                        isRecognizingMantra = false
+
+                dispatcherThread = Thread {
+                    try {
+                        Log.d("MainActivity", "AudioDispatcher starting with buffer: $tarsosProcessingBufferSizeSamples, overlap: $tarsosProcessingOverlapSamples")
+                        audioDispatcher?.run()
+                        Log.d("MainActivity", "AudioDispatcher completed normally")
+                    } catch (e: ArrayIndexOutOfBoundsException) {
+                        Log.e("MainActivity", "Buffer error in AudioDispatcher", e)
+                        runOnUiThread {
+                            isRecognizingMantra = false
+                            Toast.makeText(this@MainActivity, "Audio processing failed: buffer mismatch.", Toast.LENGTH_SHORT).show()
+                        }
+                    } catch (e: IllegalStateException) {
+                        Log.e("MainActivity", "AudioDispatcher failed due to illegal state", e)
+                        runOnUiThread {
+                            isRecognizingMantra = false
+                            Toast.makeText(this@MainActivity, "Audio processing failed: invalid state.", Toast.LENGTH_SHORT).show()
+                        }
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "Unexpected error in AudioDispatcher thread", e)
+                        runOnUiThread {
+                            isRecognizingMantra = false
+                            Toast.makeText(this@MainActivity, "Error processing audio: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
+                    } finally {
+                        stopListening()
                     }
+                }
+                dispatcherThread?.name = "AudioDispatcherThread"
+                dispatcherThread?.start()
+                Log.d("MainActivity", "Started listening.")
+            } catch (e: Exception) {
+                Log.e("MainActivity", "Error initializing AudioDispatcher", e)
+                audioRecord?.release()
+                audioRecord = null
+                isRecognizingMantra = false
+                runOnUiThread {
+                    Toast.makeText(this@MainActivity, "Failed to start listening: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             }
-            dispatcherThread?.name = "AudioDispatcherThread"
-            dispatcherThread?.start()
-            Log.d("MainActivity", "Started listening.")
         }, 500)
     }
 
@@ -215,7 +301,8 @@ class MainActivity : ComponentActivity() {
 
         dispatcherThread?.interrupt()
         try {
-            dispatcherThread?.join(500)
+            dispatcherThread?.join(1000)
+            Log.d("MainActivity", "Dispatcher thread joined")
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
             Log.e("MainActivity", "Interrupted while joining dispatcher thread", e)
@@ -228,6 +315,7 @@ class MainActivity : ComponentActivity() {
         if (audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
             try {
                 audioRecord?.stop()
+                Log.d("MainActivity", "AudioRecord stopped")
             } catch (e: IllegalStateException) {
                 Log.e("MainActivity", "Failed to stop AudioRecord", e)
             }
@@ -259,7 +347,7 @@ class MainActivity : ComponentActivity() {
     }
 
     @SuppressLint("MissingPermission")
-    private fun recordMantra() {
+    private fun recordMantra(mantraName: String) {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             Toast.makeText(this, "Microphone permission required for recording.", Toast.LENGTH_SHORT).show()
             return
@@ -270,8 +358,23 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        if (recordingBufferSize <= 0) {
-            Log.e("MainActivity", "Invalid buffer size for recording: $recordingBufferSize")
+        if (mantraName.isBlank()) {
+            Toast.makeText(this, "Mantra name cannot be empty.", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val sanitizedMantraName = mantraName.replace("[^a-zA-Z0-9_-]".toRegex(), "_")
+        var file = File(storageDir, "$sanitizedMantraName.wav")
+        var uniqueFileName = sanitizedMantraName
+        var counter = 1
+        while (file.exists()) {
+            uniqueFileName = "${sanitizedMantraName}_$counter"
+            file = File(storageDir, "$uniqueFileName.wav")
+            counter++
+        }
+
+        if (actualRecordingBufferSize <= 0) {
+            Log.e("MainActivity", "Invalid AudioRecord buffer size: $actualRecordingBufferSize")
             Toast.makeText(this, "Cannot record: Invalid buffer size.", Toast.LENGTH_SHORT).show()
             return
         }
@@ -281,12 +384,12 @@ class MainActivity : ComponentActivity() {
             localAudioRecord = AudioRecord(
                 MediaRecorder.AudioSource.MIC,
                 sampleRate,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                recordingBufferSize
+                audioChannelConfig,
+                audioFormatEncoding,
+                actualRecordingBufferSize
             )
             if (localAudioRecord.state != AudioRecord.STATE_INITIALIZED) {
-                Log.e("MainActivity", "Failed to initialize audio recording for mantra. State: ${localAudioRecord.state}")
+                Log.e("MainActivity", "Failed to initialize AudioRecord for mantra. State: ${localAudioRecord.state}")
                 Toast.makeText(this, "Failed to initialize audio recording.", Toast.LENGTH_SHORT).show()
                 localAudioRecord.release()
                 return
@@ -300,7 +403,6 @@ class MainActivity : ComponentActivity() {
 
         isRecordingMantra = true
         stopRecordingFlag.set(false)
-        val file = File(storageDir, "mantra_${System.currentTimeMillis()}.wav")
         var outputStream: FileOutputStream? = null
         var localAudioDispatcher: AudioDispatcher? = null
 
@@ -310,12 +412,18 @@ class MainActivity : ComponentActivity() {
 
             val tarsosDspAudioFormat = TarsosDSPAudioFormat(sampleRate.toFloat(), 16, 1, true, false)
             val audioStream = AndroidAudioInputStream(localAudioRecord, tarsosDspAudioFormat)
-            localAudioDispatcher = AudioDispatcher(audioStream, recordingBufferSize / 2, 0)
+            Log.d("MainActivity", "AndroidAudioInputStream initialized for recording")
+
+            localAudioDispatcher = AudioDispatcher(
+                audioStream,
+                tarsosProcessingBufferSizeSamples,
+                0 // No overlap for recording
+            )
 
             val currentAudioRecord = localAudioRecord
             localAudioDispatcher.addAudioProcessor(object : be.tarsos.dsp.AudioProcessor {
                 override fun process(audioEvent: AudioEvent): Boolean {
-                    if (stopRecordingFlag.get()) return false // Stop processing if flag is set
+                    if (stopRecordingFlag.get()) return false
                     try {
                         outputStream.write(audioEvent.byteBuffer, 0, audioEvent.byteBuffer.size)
                     } catch (e: Exception) {
@@ -332,6 +440,7 @@ class MainActivity : ComponentActivity() {
             currentAudioRecord.startRecording()
             recordingThread = Thread({
                 try {
+                    Log.d("MainActivity", "AudioDispatcher run (recording) started with buffer: $tarsosProcessingBufferSizeSamples, overlap: 0")
                     localAudioDispatcher.run()
                 } catch (e: Exception) {
                     Log.e("MainActivity", "Error in recording dispatcher thread", e)
@@ -357,12 +466,12 @@ class MainActivity : ComponentActivity() {
                     } catch (e: Exception) {
                         Log.e("MainActivity", "Error updating WAV header size", e)
                     } finally {
-                        outputStream?.close()
+                        outputStream.close()
                     }
 
                     runOnUiThread {
                         if (recordedDataSize > 0) {
-                            Toast.makeText(this@MainActivity, "Mantra recorded: ${file.nameWithoutExtension}", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(this@MainActivity, "Mantra recorded: $uniqueFileName", Toast.LENGTH_SHORT).show()
                             loadReferenceMFCCs()
                         } else {
                             if (file.exists()) file.delete()
@@ -387,20 +496,38 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun stopRecordingMantra() {
-        if (!isRecordingMantra) {
-            Log.d("MainActivity", "StopRecordingMantra called but not recording.")
+        if (isRecordingMantra) {
+            isRecordingMantra = false
+            stopRecordingFlag.set(true)
+            recordingThread?.interrupt()
+            recordingThread = null
+            Log.d("MainActivity", "Stopped recording mantra.")
+        }
+    }
+
+    private fun deleteMantra(mantraName: String) {
+        if (mantraName.isBlank()) {
+            Toast.makeText(this, "No mantra selected to delete.", Toast.LENGTH_SHORT).show()
             return
         }
-        stopRecordingFlag.set(true)
-        recordingThread?.interrupt()
-        try {
-            recordingThread?.join(500)
-        } catch (e: InterruptedException) {
-            Thread.currentThread().interrupt()
-            Log.e("MainActivity", "Interrupted while joining recording thread", e)
+
+        val file = File(storageDir, "$mantraName.wav")
+        if (!file.exists()) {
+            Toast.makeText(this, "Mantra file not found.", Toast.LENGTH_SHORT).show()
+            return
         }
-        recordingThread = null
-        Log.d("MainActivity", "Stopped recording mantra.")
+
+        try {
+            if (file.delete()) {
+                Toast.makeText(this, "Mantra '$mantraName' deleted.", Toast.LENGTH_SHORT).show()
+                loadReferenceMFCCs()
+            } else {
+                Toast.makeText(this, "Failed to delete mantra '$mantraName'.", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error deleting mantra $mantraName", e)
+            Toast.makeText(this, "Error deleting mantra '$mantraName'.", Toast.LENGTH_SHORT).show()
+        }
     }
 
     private fun writeWavHeader(outputStream: FileOutputStream, channels: Int, sampleRate: Int, bitsPerSample: Int) {
@@ -479,7 +606,7 @@ class MainActivity : ComponentActivity() {
                 val mfccList = mutableListOf<FloatArray>()
                 val mfccProcessor = MFCC(
                     sampleRate,
-                    (recordingBufferSize / 2).toFloat(),
+                    tarsosProcessingBufferSizeSamples.toFloat(),
                     13,
                     40,
                     20f,
@@ -494,11 +621,16 @@ class MainActivity : ComponentActivity() {
                     override fun getFrameLength(): Long = (file.length() - 44) / 2 // 16-bit mono
                 }
 
-                dispatcher = AudioDispatcher(customAudioStream, recordingBufferSize / 2, recordingBufferSize / 4)
+                dispatcher = AudioDispatcher(customAudioStream, tarsosProcessingBufferSizeSamples, tarsosProcessingOverlapSamples)
                 dispatcher.addAudioProcessor(mfccProcessor)
                 dispatcher.addAudioProcessor(object : be.tarsos.dsp.AudioProcessor {
                     override fun process(audioEvent: AudioEvent): Boolean {
-                        mfccList.add(mfccProcessor.mfcc.copyOf())
+                        val mfccs = mfccProcessor.mfcc
+                        if (mfccs.isEmpty() || mfccs.size != 13) {
+                            Log.w("MainActivity", "Invalid MFCCs for $mantraName: size=${mfccs.size}")
+                            return true
+                        }
+                        mfccList.add(mfccs.copyOf())
                         return true
                     }
                     override fun processingFinished() {}
