@@ -3,11 +3,14 @@ package com.example.mkproject
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.AlertDialog
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.ToneGenerator
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -26,14 +29,17 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import be.tarsos.dsp.AudioDispatcher
 import be.tarsos.dsp.AudioEvent
+import be.tarsos.dsp.AudioProcessor
 import be.tarsos.dsp.io.android.AndroidAudioInputStream
 import be.tarsos.dsp.mfcc.MFCC
 import be.tarsos.dsp.io.TarsosDSPAudioFormat
+import be.tarsos.dsp.io.TarsosDSPAudioInputStream
 import com.example.mkproject.ui.theme.MainScreen
 import com.example.mkproject.ui.theme.MkprojectTheme
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
@@ -97,8 +103,21 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    private val inbuiltMantraName = "testhello"
     private val savedMantras: List<String>
-        get() = storageDir.listFiles()?.filter { it.extension == "wav" }?.map { it.nameWithoutExtension }?.sorted() ?: emptyList()
+        get() {
+            val files = storageDir.listFiles()
+                ?.filter { it.extension == "wav" && isValidWavFile(it) }
+                ?.map { it.nameWithoutExtension }
+                ?.sorted()
+                ?: emptyList()
+            return if (files.isEmpty()) {
+                Log.d("MainActivity", "No valid WAV files found in storage, including inbuilt mantra")
+                emptyList()
+            } else {
+                files
+            }
+        }
 
     private val recordAudioLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
@@ -108,6 +127,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        // Copy inbuilt mantra from assets to storageDir
+        copyInbuiltMantraToStorage()
 
         setContent {
             MkprojectTheme {
@@ -149,6 +171,38 @@ class MainActivity : ComponentActivity() {
         }
         checkPermissionAndStart()
         loadReferenceMFCCs()
+    }
+
+    private fun copyInbuiltMantraToStorage() {
+        val inbuiltFile = File(storageDir, "$inbuiltMantraName.wav")
+        if (inbuiltFile.exists() && isValidWavFile(inbuiltFile)) {
+            Log.d("MainActivity", "Inbuilt mantra $inbuiltMantraName already exists and is valid")
+            return
+        }
+
+        try {
+            assets.open("testhello.wav").use { input ->
+                FileOutputStream(inbuiltFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
+            if (!isValidWavFile(inbuiltFile)) {
+                Log.e("MainActivity", "Copied inbuilt mantra is invalid: $inbuiltMantraName.wav")
+                inbuiltFile.delete()
+                throw IOException("Invalid WAV format for inbuilt mantra")
+            }
+            Log.d("MainActivity", "Copied inbuilt mantra to ${inbuiltFile.absolutePath}")
+        } catch (e: IOException) {
+            Log.e("MainActivity", "Failed to copy inbuilt mantra: file not found or I/O error", e)
+            runOnUiThread {
+                Toast.makeText(this, "Failed to load inbuilt mantra: File not found.", Toast.LENGTH_SHORT).show()
+            }
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Unexpected error copying inbuilt mantra", e)
+            runOnUiThread {
+                Toast.makeText(this, "Failed to load inbuilt mantra: ${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     @SuppressLint("MissingPermission")
@@ -205,16 +259,17 @@ class MainActivity : ComponentActivity() {
                 )
 
                 val mfcc = MFCC(
-                    sampleRate,
-                    tarsosProcessingBufferSizeSamples.toFloat(),
+                    tarsosProcessingBufferSizeSamples,
+                    sampleRate.toFloat(),
                     13,
                     40,
                     20f,
-                    4000f // Safer max frequency
+                    4000f
                 )
                 audioDispatcher?.addAudioProcessor(mfcc)
-                audioDispatcher?.addAudioProcessor(object : be.tarsos.dsp.AudioProcessor {
+                audioDispatcher?.addAudioProcessor(object : AudioProcessor {
                     override fun process(audioEvent: AudioEvent): Boolean {
+                        Log.d("MainActivity", "AudioEvent: bufferSize=${audioEvent.bufferSize}, byteBuffer=${audioEvent.byteBuffer.size}")
                         val mfccs = mfcc.mfcc
                         if (mfccs.isEmpty() || mfccs.size != 13) {
                             Log.w("MainActivity", "Invalid MFCCs: size=${mfccs.size}")
@@ -337,9 +392,9 @@ class MainActivity : ComponentActivity() {
             .setMessage("Microphone permission is required to record and analyze mantras. Please grant the permission in app settings.")
             .setPositiveButton("OK", null)
             .setNegativeButton("Settings") { _, _ ->
-                val intent = android.content.Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                    data = android.net.Uri.fromParts("package", packageName, null)
-                    addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.fromParts("package", packageName, null)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
                 startActivity(intent)
             }
@@ -358,8 +413,8 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        if (mantraName.isBlank()) {
-            Toast.makeText(this, "Mantra name cannot be empty.", Toast.LENGTH_SHORT).show()
+        if (mantraName.isBlank() || mantraName == inbuiltMantraName) {
+            Toast.makeText(this, if (mantraName.isBlank()) "Mantra name cannot be empty." else "Cannot use inbuilt mantra name '$inbuiltMantraName'.", Toast.LENGTH_SHORT).show()
             return
         }
 
@@ -404,7 +459,7 @@ class MainActivity : ComponentActivity() {
         isRecordingMantra = true
         stopRecordingFlag.set(false)
         var outputStream: FileOutputStream? = null
-        var localAudioDispatcher: AudioDispatcher? = null
+        var localAudioDispatcher: AudioDispatcher?
 
         try {
             outputStream = FileOutputStream(file)
@@ -417,11 +472,11 @@ class MainActivity : ComponentActivity() {
             localAudioDispatcher = AudioDispatcher(
                 audioStream,
                 tarsosProcessingBufferSizeSamples,
-                0 // No overlap for recording
+                0
             )
 
             val currentAudioRecord = localAudioRecord
-            localAudioDispatcher.addAudioProcessor(object : be.tarsos.dsp.AudioProcessor {
+            localAudioDispatcher.addAudioProcessor(object : AudioProcessor {
                 override fun process(audioEvent: AudioEvent): Boolean {
                     if (stopRecordingFlag.get()) return false
                     try {
@@ -486,7 +541,7 @@ class MainActivity : ComponentActivity() {
         } catch (e: Exception) {
             Log.e("MainActivity", "Error during mantra recording setup or execution", e)
             Toast.makeText(this, "Error starting recording.", Toast.LENGTH_SHORT).show()
-            localAudioRecord?.release()
+            localAudioRecord.release()
             outputStream?.close()
             isRecordingMantra = false
             if (file.exists() && file.length() == 44L) {
@@ -506,6 +561,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun deleteMantra(mantraName: String) {
+        if (mantraName == inbuiltMantraName) {
+            Toast.makeText(this, "Cannot delete inbuilt mantra '$inbuiltMantraName'.", Toast.LENGTH_SHORT).show()
+            return
+        }
         if (mantraName.isBlank()) {
             Toast.makeText(this, "No mantra selected to delete.", Toast.LENGTH_SHORT).show()
             return
@@ -558,14 +617,26 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun isValidWavFile(file: File): Boolean {
-        FileInputStream(file).use { input ->
-            val header = ByteArray(44)
-            if (input.read(header) != 44) return false
-            return header[0] == 'R'.code.toByte() &&
-                    header[8] == 'W'.code.toByte() &&
-                    header[20] == 1.toByte() && // PCM format
-                    header[22] == 1.toByte() && // Mono
-                    header[24] == (sampleRate and 0xff).toByte() // Sample rate
+        try {
+            FileInputStream(file).use { input ->
+                val header = ByteArray(44)
+                if (input.read(header) != 44) {
+                    Log.w("MainActivity", "Invalid WAV file: ${file.name}, header size < 44 bytes")
+                    return false
+                }
+                val isValid = header[0] == 'R'.code.toByte() &&
+                        header[8] == 'W'.code.toByte() &&
+                        header[20] == 1.toByte() && // PCM format
+                        header[22] == 1.toByte() && // Mono
+                        header[24] == (sampleRate and 0xff).toByte() // Sample rate
+                if (!isValid) {
+                    Log.w("MainActivity", "Invalid WAV file: ${file.name}, failed header validation")
+                }
+                return isValid
+            }
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error validating WAV file: ${file.name}", e)
+            return false
         }
     }
 
@@ -587,14 +658,14 @@ class MainActivity : ComponentActivity() {
         savedMantras.forEach { mantraName ->
             val file = File(storageDir, "$mantraName.wav")
             if (!file.exists() || file.length() <= 44 || !isValidWavFile(file)) {
-                Log.w("MainActivity", "Invalid WAV file: $mantraName.wav")
+                Log.w("MainActivity", "Skipping $mantraName: file missing, too small, or invalid")
                 return@forEach
             }
 
             var inputStream: FileInputStream? = null
             var dispatcher: AudioDispatcher? = null
             try {
-                Log.d("MainActivity", "Processing reference: $mantraName")
+                Log.d("MainActivity", "Processing reference: $mantraName, fileSize=${file.length()}")
                 inputStream = FileInputStream(file)
 
                 if (inputStream.skip(44L) != 44L) {
@@ -605,15 +676,15 @@ class MainActivity : ComponentActivity() {
                 val audioFormat = TarsosDSPAudioFormat(sampleRate.toFloat(), 16, 1, true, false)
                 val mfccList = mutableListOf<FloatArray>()
                 val mfccProcessor = MFCC(
-                    sampleRate,
-                    tarsosProcessingBufferSizeSamples.toFloat(),
+                    tarsosProcessingBufferSizeSamples,
+                    sampleRate.toFloat(),
                     13,
                     40,
                     20f,
                     4000f
                 )
 
-                val customAudioStream = object : be.tarsos.dsp.io.TarsosDSPAudioInputStream {
+                val customAudioStream = object : TarsosDSPAudioInputStream {
                     override fun getFormat(): TarsosDSPAudioFormat = audioFormat
                     override fun read(b: ByteArray, off: Int, len: Int): Int = inputStream.read(b, off, len)
                     override fun skip(n: Long): Long = 0 // Header already skipped
@@ -623,7 +694,7 @@ class MainActivity : ComponentActivity() {
 
                 dispatcher = AudioDispatcher(customAudioStream, tarsosProcessingBufferSizeSamples, tarsosProcessingOverlapSamples)
                 dispatcher.addAudioProcessor(mfccProcessor)
-                dispatcher.addAudioProcessor(object : be.tarsos.dsp.AudioProcessor {
+                dispatcher.addAudioProcessor(object : AudioProcessor {
                     override fun process(audioEvent: AudioEvent): Boolean {
                         val mfccs = mfccProcessor.mfcc
                         if (mfccs.isEmpty() || mfccs.size != 13) {
@@ -646,6 +717,9 @@ class MainActivity : ComponentActivity() {
                 }
             } catch (e: Exception) {
                 Log.e("MainActivity", "Error loading MFCC for $mantraName", e)
+                runOnUiThread {
+                    Toast.makeText(this@MainActivity, "Failed to process mantra: $mantraName", Toast.LENGTH_SHORT).show()
+                }
             } finally {
                 inputStream?.close()
                 dispatcher?.stop()
@@ -681,7 +755,7 @@ class MainActivity : ComponentActivity() {
             stopListening()
         }
 
-        val toneGenerator = ToneGenerator(android.media.AudioManager.STREAM_MUSIC, 100)
+        val toneGenerator = ToneGenerator(AudioManager.STREAM_MUSIC, 100)
         toneGenerator.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 300)
         Handler(Looper.getMainLooper()).postDelayed({ toneGenerator.release() }, 500)
 

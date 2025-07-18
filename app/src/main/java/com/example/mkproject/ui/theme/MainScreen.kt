@@ -50,12 +50,14 @@ fun MainScreen(
     var showRecordDialog by remember { mutableStateOf(false) }
     var newMantraName by remember { mutableStateOf("") }
     var showDeleteDialog by remember { mutableStateOf(false) }
+    val inbuiltMantraName = "Om_Namah_Shivaya"
 
     LaunchedEffect(mantras) {
         if (selectedMantra !in mantras && mantras.isNotEmpty()) {
             selectedMantra = mantras.first()
         } else if (mantras.isEmpty()) {
             selectedMantra = ""
+            errorMessage = "No mantras available. Record a new mantra."
         }
     }
 
@@ -64,6 +66,7 @@ fun MainScreen(
             newMantraName = newMantraName,
             onNameChange = { newMantraName = it.trim().take(50) },
             mantras = mantras,
+            inbuiltMantraName = inbuiltMantraName,
             onConfirm = {
                 onRecordMantraClick(newMantraName)
                 showRecordDialog = false
@@ -146,10 +149,14 @@ fun MainScreen(
                             errorMessage = "Please select a mantra to delete."
                             return@Button
                         }
+                        if (selectedMantra == inbuiltMantraName) {
+                            errorMessage = "Cannot delete inbuilt mantra '$inbuiltMantraName'."
+                            return@Button
+                        }
                         errorMessage = ""
                         showDeleteDialog = true
                     },
-                    enabled = selectedMantra.isNotEmpty() && processingStatus != "Listening for mantra..." && processingStatus != "Recording mantra...",
+                    enabled = selectedMantra.isNotEmpty() && selectedMantra != inbuiltMantraName && processingStatus != "Listening for mantra..." && processingStatus != "Recording mantra...",
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("Delete Selected Mantra", fontSize = 16.sp)
@@ -164,23 +171,24 @@ fun MainScreen(
                         onExpandedChange = { isMenuExpanded = !isMenuExpanded }
                     ) {
                         OutlinedTextField(
-                            value = selectedMantra,
+                            value = if (selectedMantra.isEmpty()) "No mantras available" else selectedMantra,
                             onValueChange = {},
                             readOnly = true,
                             label = { Text("Mantra") },
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = isMenuExpanded) },
                             modifier = Modifier
                                 .menuAnchor()
-                                .fillMaxWidth()
+                                .fillMaxWidth(),
+                            enabled = mantras.isNotEmpty()
                         )
 
                         ExposedDropdownMenu(
-                            expanded = isMenuExpanded,
+                            expanded = isMenuExpanded && mantras.isNotEmpty(),
                             onDismissRequest = { isMenuExpanded = false }
                         ) {
                             mantras.forEach { mantra ->
                                 DropdownMenuItem(
-                                    text = { Text(mantra, fontSize = 16.sp) },
+                                    text = { Text(mantra + if (mantra == inbuiltMantraName) " (Inbuilt)" else "", fontSize = 16.sp) },
                                     onClick = {
                                         selectedMantra = mantra
                                         isMenuExpanded = false
@@ -229,7 +237,7 @@ fun MainScreen(
                         errorMessage = ""
                         onStartStopClick(selectedMantra, matchLimitText)
                     },
-                    enabled = processingStatus != "Recording mantra...",
+                    enabled = processingStatus != "Recording mantra..." && selectedMantra.isNotEmpty(),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text(
@@ -259,11 +267,13 @@ fun RecordDialog(
     newMantraName: String,
     onNameChange: (String) -> Unit,
     mantras: List<String>,
+    inbuiltMantraName: String,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val nameExists = mantras.contains(newMantraName)
     val isNameEmpty = newMantraName.isBlank()
+    val nameExists = mantras.contains(newMantraName)
+    val isNameInbuilt = newMantraName == inbuiltMantraName
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -276,18 +286,22 @@ fun RecordDialog(
                     onValueChange = onNameChange,
                     label = { Text("Mantra Name") },
                     modifier = Modifier.fillMaxWidth(),
-                    isError = isNameEmpty || nameExists,
+                    isError = isNameEmpty || nameExists || isNameInbuilt,
                     singleLine = true
                 )
-                if (isNameEmpty) {
-                    Text(
+                when {
+                    isNameEmpty -> Text(
                         "Name cannot be empty.",
                         color = MaterialTheme.colorScheme.error,
                         fontSize = 12.sp
                     )
-                } else if (nameExists) {
-                    Text(
+                    nameExists -> Text(
                         "Name already exists. Try: ${newMantraName}_${mantras.size + 1}",
+                        color = MaterialTheme.colorScheme.error,
+                        fontSize = 12.sp
+                    )
+                    isNameInbuilt -> Text(
+                        "Cannot use inbuilt mantra name '$inbuiltMantraName'.",
                         color = MaterialTheme.colorScheme.error,
                         fontSize = 12.sp
                     )
@@ -297,7 +311,7 @@ fun RecordDialog(
         confirmButton = {
             Button(
                 onClick = onConfirm,
-                enabled = !isNameEmpty && !nameExists
+                enabled = !isNameEmpty && !nameExists && !isNameInbuilt
             ) {
                 Text("Start Recording")
             }
@@ -314,7 +328,7 @@ fun RecordDialog(
 @Composable
 fun MainScreenPreview() {
     MainScreen(
-        mantras = listOf("Om Namah Shivaya", "Gayatri Mantra", "Mahamrityunjaya"),
+        mantras = listOf("Om_Namah_Shivaya", "Gayatri_Mantra", "Mahamrityunjaya"),
         matchLimitText = "5",
         onMatchLimitTextChange = {},
         onRecordMantraClick = { _ -> },
