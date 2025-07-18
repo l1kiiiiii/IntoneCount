@@ -38,13 +38,14 @@ import com.example.mkproject.ui.theme.MainScreen
 import com.example.mkproject.ui.theme.MkprojectTheme
 import java.io.File
 import java.io.FileInputStream
+import java.io.FileNotFoundException
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
-import kotlin.concurrent.thread
 import kotlin.math.pow
 import kotlin.math.sqrt
 
@@ -67,7 +68,7 @@ class MainActivity : ComponentActivity() {
     private val stopRecordingFlag = AtomicBoolean(false)
 
     // Constants for audio processing
-    private val sampleRate = 16000
+    private val sampleRate = 48000
     private val audioFormatEncoding = AudioFormat.ENCODING_PCM_16BIT
     private val audioChannelConfig = AudioFormat.CHANNEL_IN_MONO
 
@@ -111,11 +112,12 @@ class MainActivity : ComponentActivity() {
                 ?.map { it.nameWithoutExtension }
                 ?.sorted()
                 ?: emptyList()
-            return if (files.isEmpty()) {
-                Log.d("MainActivity", "No valid WAV files found in storage, including inbuilt mantra")
+            return files.ifEmpty {
+                Log.d(
+                    "MainActivity",
+                    "No valid WAV files found in storage, including inbuilt mantra"
+                )
                 emptyList()
-            } else {
-                files
             }
         }
 
@@ -174,34 +176,111 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun copyInbuiltMantraToStorage() {
-        val inbuiltFile = File(storageDir, "$inbuiltMantraName.wav")
-        if (inbuiltFile.exists() && isValidWavFile(inbuiltFile)) {
-            Log.d("MainActivity", "Inbuilt mantra $inbuiltMantraName already exists and is valid")
-            return
+        val inbuiltFile = File(storageDir, "$inbuiltMantraName.wav") // storageDir is filesDir/mantras
+        // inbuiltMantraName is "testhello"
+        Log.d("MainActivity_Copy", "Target inbuilt file path: ${inbuiltFile.absolutePath}")
+
+        // Check 1: Does the 'mantras' directory exist?
+        if (!storageDir.exists()) {
+            Log.e("MainActivity_Copy", "Storage directory ${storageDir.absolutePath} does NOT exist. Attempting to create.")
+            if (!storageDir.mkdirs()) {
+                Log.e("MainActivity_Copy", "FAILED to create storage directory ${storageDir.absolutePath}.")
+                // Post toast or handle error appropriately, as file copy will fail
+                runOnUiThread {
+                    Toast.makeText(this, "Critical: Failed to create app data directory.", Toast.LENGTH_LONG).show()
+                }
+                return // Cannot proceed
+            } else {
+                Log.d("MainActivity_Copy", "Storage directory ${storageDir.absolutePath} created successfully.")
+            }
+        } else {
+            Log.d("MainActivity_Copy", "Storage directory ${storageDir.absolutePath} already exists.")
         }
 
+        // Check 2: If the file already exists, is it valid? (Your existing logic is good)
+        if (inbuiltFile.exists()) {
+            Log.d("MainActivity_Copy", "Inbuilt file ${inbuiltFile.name} already exists. Validating...")
+            if (isValidWavFile(inbuiltFile)) {
+                Log.d("MainActivity_Copy", "Inbuilt mantra $inbuiltMantraName already exists and is valid. No copy needed.")
+                return
+            } else {
+                Log.w("MainActivity_Copy", "Inbuilt file ${inbuiltFile.name} exists but is INVALID. Will attempt to overwrite.")
+                // Optionally delete it first to ensure a clean copy, though FileOutputStream should overwrite
+                // inbuiltFile.delete()
+            }
+        } else {
+            Log.d("MainActivity_Copy", "Inbuilt file ${inbuiltFile.name} does not exist. Proceeding with copy.")
+        }
+
+        var assetInputStream: InputStream? = null
+        var fileOutputStream: FileOutputStream? = null
         try {
-            assets.open("testhello.wav").use { input ->
-                FileOutputStream(inbuiltFile).use { output ->
-                    input.copyTo(output)
+            Log.d("MainActivity_Copy", "Attempting to open asset: 'testhello.wav'")
+            // Verify asset exists by listing (more robust check)
+            val assetFiles = assets.list("") // Lists files/dirs in root of assets
+            val assetPathForTestHello = "testhello.wav" // Assuming it's directly in assets root
+
+            if (assetFiles == null || !assetFiles.contains(assetPathForTestHello)) {
+                Log.e("MainActivity_Copy", "Asset '$assetPathForTestHello' NOT FOUND in assets root. Listing: ${assetFiles?.joinToString()}")
+                // Also check subdirectories if it might be there, e.g., assets.list("sounds")
+                // For now, assuming it's in the root.
+                runOnUiThread {
+                    Toast.makeText(this, "Error: Inbuilt mantra source file missing from app package.", Toast.LENGTH_LONG).show()
                 }
+                return // Critical error, cannot copy
             }
+            Log.d("MainActivity_Copy", "Asset '$assetPathForTestHello' confirmed in assets listing.")
+
+            assetInputStream = assets.open(assetPathForTestHello) // Or just "testhello.wav"
+            Log.d("MainActivity_Copy", "Asset 'testhello.wav' opened successfully.")
+
+            fileOutputStream = FileOutputStream(inbuiltFile) // This will create the file if it doesn't exist, or overwrite
+            Log.d("MainActivity_Copy", "FileOutputStream for ${inbuiltFile.name} opened.")
+
+            assetInputStream.copyTo(fileOutputStream)
+            Log.d("MainActivity_Copy", "Finished copying asset to ${inbuiltFile.absolutePath}. File size: ${inbuiltFile.length()}")
+
             if (!isValidWavFile(inbuiltFile)) {
-                Log.e("MainActivity", "Copied inbuilt mantra is invalid: $inbuiltMantraName.wav")
-                inbuiltFile.delete()
-                throw IOException("Invalid WAV format for inbuilt mantra")
+                Log.e("MainActivity_Copy", "Copied inbuilt mantra is INVALID: ${inbuiltFile.name}. Deleting.")
+                inbuiltFile.delete() // Clean up invalid file
+                throw IOException("Invalid WAV format for inbuilt mantra after copy.")
             }
-            Log.d("MainActivity", "Copied inbuilt mantra to ${inbuiltFile.absolutePath}")
-        } catch (e: IOException) {
-            Log.e("MainActivity", "Failed to copy inbuilt mantra: file not found or I/O error", e)
+            Log.d("MainActivity_Copy", "Copied inbuilt mantra ${inbuiltFile.name} is VALID.")
+
+        } catch (e: FileNotFoundException) { // Specifically for assets.open()
+            Log.e("MainActivity_Copy", "Failed to copy inbuilt mantra: ASSET 'testhello.wav' NOT FOUND.", e)
             runOnUiThread {
-                Toast.makeText(this, "Failed to load inbuilt mantra: File not found.", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Failed to load inbuilt mantra: Source file missing.", Toast.LENGTH_LONG).show()
+            }
+        } catch (e: IOException) {
+            Log.e("MainActivity_Copy", "Failed to copy inbuilt mantra due to IOException: ${e.message}", e)
+            runOnUiThread {
+                Toast.makeText(this, "Failed to load inbuilt mantra: I/O error.", Toast.LENGTH_LONG).show()
+            }
+            // Clean up potentially partially written file
+            if (inbuiltFile.exists()) {
+                inbuiltFile.delete()
             }
         } catch (e: Exception) {
-            Log.e("MainActivity", "Unexpected error copying inbuilt mantra", e)
+            Log.e("MainActivity_Copy", "Unexpected error copying inbuilt mantra: ${e.message}", e)
             runOnUiThread {
-                Toast.makeText(this, "Failed to load inbuilt mantra: ${e.message}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "Failed to load inbuilt mantra: ${e.message}", Toast.LENGTH_LONG).show()
             }
+            if (inbuiltFile.exists()) {
+                inbuiltFile.delete()
+            }
+        } finally {
+            try {
+                assetInputStream?.close()
+            } catch (ioe: IOException) {
+                Log.w("MainActivity_Copy", "Error closing asset input stream", ioe)
+            }
+            try {
+                fileOutputStream?.close()
+            } catch (ioe: IOException) {
+                Log.w("MainActivity_Copy", "Error closing file output stream", ioe)
+            }
+            Log.d("MainActivity_Copy", "copyInbuiltMantraToStorage finished execution.")
         }
     }
 
@@ -250,7 +329,7 @@ class MainActivity : ComponentActivity() {
                 val audioStream = AndroidAudioInputStream(audioRecord!!, tarsosDspAudioFormat)
                 Log.d("MainActivity", "AndroidAudioInputStream initialized")
 
-                Log.d("MainActivity", "Audio stream frame length: ${audioStream.getFrameLength()}")
+                Log.d("MainActivity", "Audio stream frame length: ${audioStream.frameLength}")
 
                 audioDispatcher = AudioDispatcher(
                     audioStream,
@@ -463,7 +542,7 @@ class MainActivity : ComponentActivity() {
 
         try {
             outputStream = FileOutputStream(file)
-            writeWavHeader(outputStream, channels = 1, sampleRate = sampleRate, bitsPerSample = 16)
+            writeWavHeader(outputStream, channels = 2, sampleRate = sampleRate, bitsPerSample = 16)
 
             val tarsosDspAudioFormat = TarsosDSPAudioFormat(sampleRate.toFloat(), 16, 1, true, false)
             val audioStream = AndroidAudioInputStream(localAudioRecord, tarsosDspAudioFormat)
@@ -550,6 +629,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+
     private fun stopRecordingMantra() {
         if (isRecordingMantra) {
             isRecordingMantra = false
@@ -616,29 +696,120 @@ class MainActivity : ComponentActivity() {
         outputStream.write(header)
     }
 
+    // This is an EXAMPLE of what your isValidWavFile might look like.
+// You need to show me YOUR ACTUAL isValidWavFile function.
     private fun isValidWavFile(file: File): Boolean {
-        try {
-            FileInputStream(file).use { input ->
-                val header = ByteArray(44)
-                if (input.read(header) != 44) {
-                    Log.w("MainActivity", "Invalid WAV file: ${file.name}, header size < 44 bytes")
-                    return false
-                }
-                val isValid = header[0] == 'R'.code.toByte() &&
-                        header[8] == 'W'.code.toByte() &&
-                        header[20] == 1.toByte() && // PCM format
-                        header[22] == 1.toByte() && // Mono
-                        header[24] == (sampleRate and 0xff).toByte() // Sample rate
-                if (!isValid) {
-                    Log.w("MainActivity", "Invalid WAV file: ${file.name}, failed header validation")
-                }
-                return isValid
-            }
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Error validating WAV file: ${file.name}", e)
+        if (!file.exists() || file.length() < 44) { // Basic check for existence and minimum header size
+            Log.w("MainActivity", "File ${file.name} does not exist or too small to be WAV.")
             return false
         }
+        var fis: FileInputStream? = null
+        try {
+            fis = FileInputStream(file)
+            val header = ByteArray(44)
+            val bytesRead = fis.read(header, 0, 44)
+
+            if (bytesRead < 44) {
+                Log.w("MainActivity", "Could not read full 44-byte WAV header from ${file.name}.")
+                return false
+            }
+
+            // --- COMMON VALIDATION POINTS ---
+
+            // 1. "RIFF" chunk descriptor (Bytes 0-3)
+            if (!(header[0] == 'R'.code.toByte() && header[1] == 'I'.code.toByte() &&
+                        header[2] == 'F'.code.toByte() && header[3] == 'F'.code.toByte())) {
+                Log.w("MainActivity", "Invalid WAV file: ${file.name}, missing 'RIFF' marker. Found: ${header.sliceArray(0..3).map { it.toInt().toChar() }.joinToString("")}")
+                return false
+            }
+
+            // 2. "WAVE" format (Bytes 8-11)
+            if (!(header[8] == 'W'.code.toByte() && header[9] == 'A'.code.toByte() &&
+                        header[10] == 'V'.code.toByte() && header[11] == 'E'.code.toByte())) {
+                Log.w("MainActivity", "Invalid WAV file: ${file.name}, missing 'WAVE' marker. Found: ${header.sliceArray(8..11).map { it.toInt().toChar() }.joinToString("")}")
+                return false
+            }
+
+            // 3. "fmt " sub-chunk (Bytes 12-15)
+            if (!(header[12] == 'f'.code.toByte() && header[13] == 'm'.code.toByte() &&
+                        header[14] == 't'.code.toByte() && header[15] == ' '.code.toByte())) {
+                Log.w("MainActivity", "Invalid WAV file: ${file.name}, missing 'fmt ' marker. Found: ${header.sliceArray(12..15).map { it.toInt().toChar() }.joinToString("")}")
+                return false
+            }
+
+            // 4. AudioFormat (PCM = 1) (Bytes 20-21)
+            val audioFormat = ByteBuffer.wrap(header, 20, 2).order(ByteOrder.LITTLE_ENDIAN).short
+            if (audioFormat.toInt() != 1) { // 1 means PCM
+                Log.w("MainActivity", "Invalid WAV file: ${file.name}, unsupported audio format: $audioFormat (expected 1 for PCM).")
+                return false
+            }
+
+            // 5. NumChannels (e.g., Mono = 1) (Bytes 22-23)
+            val numChannels = ByteBuffer.wrap(header, 22, 2).order(ByteOrder.LITTLE_ENDIAN).short
+            // if (numChannels.toInt() != 1) { // Your app expects MONO
+            //     Log.w("MainActivity", "Invalid WAV file: ${file.name}, unexpected number of channels: $numChannels (expected 1).")
+            //     return false
+            // }
+            Log.d("MainActivity_WAV_Validate", "File: ${file.name}, Channels: $numChannels")
+
+
+            // 6. SampleRate (e.g., 16000 Hz) (Bytes 24-27)
+            val fileSampleRate = ByteBuffer.wrap(header, 24, 4).order(ByteOrder.LITTLE_ENDIAN).int
+            // if (fileSampleRate != this.sampleRate) { // this.sampleRate is your target 16000
+            //     Log.w("MainActivity", "Invalid WAV file: ${file.name}, unexpected sample rate: $fileSampleRate (expected ${this.sampleRate}).")
+            //     return false
+            // }
+            Log.d("MainActivity_WAV_Validate", "File: ${file.name}, Sample Rate: $fileSampleRate")
+
+            // 7. BitsPerSample (e.g., 16) (Bytes 34-35)
+            val bitsPerSample = ByteBuffer.wrap(header, 34, 2).order(ByteOrder.LITTLE_ENDIAN).short
+            // if (bitsPerSample.toInt() != 16) { // Your app expects 16-bit
+            //     Log.w("MainActivity", "Invalid WAV file: ${file.name}, unexpected bits per sample: $bitsPerSample (expected 16).")
+            //     return false
+            // }
+            Log.d("MainActivity_WAV_Validate", "File: ${file.name}, BitsPerSample: $bitsPerSample")
+
+
+            // 8. "data" sub-chunk (Bytes 36-39)
+            // This can sometimes be other chunks like "LIST" before "data"
+            // A more robust check would scan for "data"
+            var dataChunkOffset = 36
+            while (dataChunkOffset < header.size - 4) {
+                if (header[dataChunkOffset] == 'd'.code.toByte() && header[dataChunkOffset+1] == 'a'.code.toByte() &&
+                    header[dataChunkOffset+2] == 't'.code.toByte() && header[dataChunkOffset+3] == 'a'.code.toByte()) {
+                    Log.d("MainActivity_WAV_Validate", "Found 'data' chunk at offset $dataChunkOffset for ${file.name}")
+                    break // Found it
+                }
+                // If not 'data', skip this chunk: read its size (4 bytes) and advance
+                if (dataChunkOffset + 8 > header.size) break // Not enough space to read size
+                val chunkSize = ByteBuffer.wrap(header, dataChunkOffset + 4, 4).order(ByteOrder.LITTLE_ENDIAN).int
+                dataChunkOffset += (8 + chunkSize)
+                // Add padding if chunk size is odd
+                if (chunkSize % 2 != 0) {
+                    dataChunkOffset++
+                }
+            }
+            if (dataChunkOffset >= header.size -4 ) { // or a better check if not found
+                Log.w("MainActivity", "Invalid WAV file: ${file.name}, 'data' chunk not found where expected.")
+                // return false // Be careful with this check, data chunk is not always at byte 36
+            }
+
+
+            Log.i("MainActivity", "WAV file ${file.name} passed header validation.")
+            return true
+
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error validating WAV file ${file.name}: ${e.message}", e)
+            return false
+        } finally {
+            try {
+                fis?.close()
+            } catch (_: IOException) {
+                // ignore
+            }
+        }
     }
+
 
     private fun List<FloatArray>.averageMfcc(): FloatArray {
         if (isEmpty()) return FloatArray(13)
