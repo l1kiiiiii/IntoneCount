@@ -698,6 +698,9 @@ class MainActivity : ComponentActivity() {
 
     // This is an EXAMPLE of what your isValidWavFile might look like.
 // You need to show me YOUR ACTUAL isValidWavFile function.
+
+    // This is an EXAMPLE of what your isValidWavFile might look like.
+// You need to show me YOUR ACTUAL isValidWavFile function.
     private fun isValidWavFile(file: File): Boolean {
         if (!file.exists() || file.length() < 44) { // Basic check for existence and minimum header size
             Log.w("MainActivity", "File ${file.name} does not exist or too small to be WAV.")
@@ -809,6 +812,7 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
 
 
     private fun List<FloatArray>.averageMfcc(): FloatArray {
