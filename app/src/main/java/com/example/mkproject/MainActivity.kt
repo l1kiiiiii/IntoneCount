@@ -3,6 +3,10 @@ package com.example.mkproject
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.AlertDialog
+import android.app.AppOpsManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioFormat
@@ -11,6 +15,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.ToneGenerator
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -46,8 +51,11 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.jvm.java
 import kotlin.math.pow
 import kotlin.math.sqrt
+import android.os.Process
+
 
 class MainActivity : ComponentActivity() {
 
@@ -121,12 +129,21 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-    private val recordAudioLauncher =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
-            if (!isGranted) showPermissionAlert()
+    private val recordAudioLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+        if (isGranted) {
+            Log.d("MainActivity", "RECORD_AUDIO permission granted")
+        } else {
+            Toast.makeText(this, "Microphone permission denied", Toast.LENGTH_SHORT).show()
         }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val channel = NotificationChannel(
+            "recording_channel",
+            "Recording Service",
+            NotificationManager.IMPORTANCE_LOW
+        )
+        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
@@ -173,6 +190,12 @@ class MainActivity : ComponentActivity() {
         }
         checkPermissionAndStart()
         loadReferenceMFCCs()
+    }
+
+    private fun disableBatteryOptimizations() {
+        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+        intent.data = Uri.parse("package:$packageName")
+        startActivity(intent)
     }
 
     private fun copyInbuiltMantraToStorage() {
@@ -460,7 +483,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun checkPermissionAndStart() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+        val permissionState = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+        Log.d("MainActivity", "RECORD_AUDIO permission state: $permissionState")
+        if (permissionState != PackageManager.PERMISSION_GRANTED) {
             recordAudioLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
@@ -480,8 +505,24 @@ class MainActivity : ComponentActivity() {
             .show()
     }
 
+    private fun isMicrophoneOpAllowed(): Boolean {
+        val appOps = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            appOps.unsafeCheckOpNoThrow("android:record_audio", Process.myUid(), packageName)
+        } else {
+            appOps.checkOpNoThrow("android:record_audio", Process.myUid(), packageName)
+        }
+        Log.d("MainActivity", "AppOps OP_RECORD_AUDIO mode: $mode")
+        return mode == AppOpsManager.MODE_ALLOWED
+    }
+
     @SuppressLint("MissingPermission")
     private fun recordMantra(mantraName: String) {
+        if (!isMicrophoneOpAllowed()) {
+            Log.e("MainActivity", "Microphone operation blocked by AppOps")
+            Toast.makeText(this, "Microphone access blocked by system. Check app settings.", Toast.LENGTH_LONG).show()
+            return
+        }
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             Toast.makeText(this, "Microphone permission required for recording.", Toast.LENGTH_SHORT).show()
             return
@@ -528,6 +569,13 @@ class MainActivity : ComponentActivity() {
                 localAudioRecord.release()
                 return
             }
+            localAudioRecord.startRecording()
+            if (localAudioRecord.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                Log.e("MainActivity", "AudioRecord failed to start recording. State: ${localAudioRecord.recordingState}")
+                Toast.makeText(this, "Failed to start audio recording.", Toast.LENGTH_SHORT).show()
+                localAudioRecord.release()
+                return
+            }
         } catch (e: Exception) {
             Log.e("MainActivity", "Exception initializing AudioRecord for mantra recording", e)
             Toast.makeText(this, "Error initializing recording.", Toast.LENGTH_SHORT).show()
@@ -542,7 +590,7 @@ class MainActivity : ComponentActivity() {
 
         try {
             outputStream = FileOutputStream(file)
-            writeWavHeader(outputStream, channels = 2, sampleRate = sampleRate, bitsPerSample = 16)
+            writeWavHeader(outputStream, channels = 1, sampleRate = sampleRate, bitsPerSample = 16)
 
             val tarsosDspAudioFormat = TarsosDSPAudioFormat(sampleRate.toFloat(), 16, 1, true, false)
             val audioStream = AndroidAudioInputStream(localAudioRecord, tarsosDspAudioFormat)
@@ -558,6 +606,7 @@ class MainActivity : ComponentActivity() {
             localAudioDispatcher.addAudioProcessor(object : AudioProcessor {
                 override fun process(audioEvent: AudioEvent): Boolean {
                     if (stopRecordingFlag.get()) return false
+                    Log.d("MainActivity", "Recording buffer size: ${audioEvent.byteBuffer.size}")
                     try {
                         outputStream.write(audioEvent.byteBuffer, 0, audioEvent.byteBuffer.size)
                     } catch (e: Exception) {
@@ -696,11 +745,8 @@ class MainActivity : ComponentActivity() {
         outputStream.write(header)
     }
 
-    // This is an EXAMPLE of what your isValidWavFile might look like.
-// You need to show me YOUR ACTUAL isValidWavFile function.
 
-    // This is an EXAMPLE of what your isValidWavFile might look like.
-// You need to show me YOUR ACTUAL isValidWavFile function.
+
     private fun isValidWavFile(file: File): Boolean {
         if (!file.exists() || file.length() < 44) { // Basic check for existence and minimum header size
             Log.w("MainActivity", "File ${file.name} does not exist or too small to be WAV.")
