@@ -76,7 +76,7 @@ class MainActivity : ComponentActivity() {
     private val stopRecordingFlag = AtomicBoolean(false)
 
     // Constants for audio processing
-    private val sampleRate = 48000
+    private val sampleRate = 48000 // 48kHz is standard for TarsosDSP, but we use 48000 for consistency with Android
     private val audioFormatEncoding = AudioFormat.ENCODING_PCM_16BIT
     private val audioChannelConfig = AudioFormat.CHANNEL_IN_MONO
 
@@ -84,16 +84,28 @@ class MainActivity : ComponentActivity() {
     private val audioRecordMinBufferSize: Int by lazy {
         val size = AudioRecord.getMinBufferSize(sampleRate, audioChannelConfig, audioFormatEncoding)
         if (size <= 0) {
-            Log.e("MainActivity", "Invalid min buffer size: $size, defaulting to 4096")
-            4096
-        } else {
+            Log.e(
+                "MainActivity",
+                "Invalid min buffer size for 48kHz: $size, defaulting to a larger size like 4096 or 8192"
+            )
+            // For 48kHz, PCM_16BIT, MONO, a common min buffer might be around 3840 bytes.
+            // It's good to use a multiple of your processing buffer if possible, or at least a safe default.
+            8192
+        }else {
             size
         }
     }
+    private fun downsample48kTo16k(input: ShortArray): ShortArray {
+        val downsampled = ShortArray(input.size / 3)
+        for (i in downsampled.indices) {
+            downsampled[i] = input[i * 3]
+        }
+        return downsampled
+    }
     private val actualRecordingBufferSize: Int by lazy {
         val minSize = audioRecordMinBufferSize * 2
-        val powerOfTwo = listOf(1024, 2048, 4096, 8192).firstOrNull { it >= minSize } ?: 4096
-        Log.d("MainActivity", "AudioRecord buffer size: min=$audioRecordMinBufferSize, chosen=$powerOfTwo")
+        val powerOfTwo = listOf(2048, 4096, 8192, 16384).firstOrNull { it >= minSize } ?: 8192
+        Log.d("MainActivity", "AudioRecord buffer size (48kHz): min=$audioRecordMinBufferSize, chosen=$powerOfTwo")
         powerOfTwo
     }
 
@@ -198,8 +210,24 @@ class MainActivity : ComponentActivity() {
         startActivity(intent)
     }
 
+
+    fun loadWavToFloatArray(file: File): FloatArray {
+        val input = FileInputStream(file)
+        input.skip(44) // Skip WAV header
+        val bytes = input.readBytes()
+        val floats = FloatArray(bytes.size / 2)
+        val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        for (i in floats.indices) {
+            floats[i] = buffer.short.toFloat() / Short.MAX_VALUE
+        }
+        input.close()
+        return floats
+    }
+
     private fun copyInbuiltMantraToStorage() {
-        val inbuiltFile = File(storageDir, "$inbuiltMantraName.wav") // storageDir is filesDir/mantras
+        val inbuiltMantraName = "testhello"
+        val inbuiltFile = File(storageDir, "$inbuiltMantraName.wav")
+        // storageDir is filesDir/mantras
         // inbuiltMantraName is "testhello"
         Log.d("MainActivity_Copy", "Target inbuilt file path: ${inbuiltFile.absolutePath}")
 
@@ -242,6 +270,8 @@ class MainActivity : ComponentActivity() {
             // Verify asset exists by listing (more robust check)
             val assetFiles = assets.list("") // Lists files/dirs in root of assets
             val assetPathForTestHello = "testhello.wav" // Assuming it's directly in assets root
+
+            Log.d("AssetCheck", "Assets: ${assetFiles?.joinToString()}")
 
             if (assetFiles == null || !assetFiles.contains(assetPathForTestHello)) {
                 Log.e("MainActivity_Copy", "Asset '$assetPathForTestHello' NOT FOUND in assets root. Listing: ${assetFiles?.joinToString()}")
@@ -350,7 +380,7 @@ class MainActivity : ComponentActivity() {
 
                 val tarsosDspAudioFormat = TarsosDSPAudioFormat(sampleRate.toFloat(), 16, 1, true, false)
                 val audioStream = AndroidAudioInputStream(audioRecord!!, tarsosDspAudioFormat)
-                Log.d("MainActivity", "AndroidAudioInputStream initialized")
+                Log.d("MainActivity", "AndroidAudioInputStream initialized 48khz")
 
                 Log.d("MainActivity", "Audio stream frame length: ${audioStream.frameLength}")
 
@@ -558,7 +588,7 @@ class MainActivity : ComponentActivity() {
         try {
             localAudioRecord = AudioRecord(
                 MediaRecorder.AudioSource.MIC,
-                sampleRate,
+                sampleRate,//48000 hz
                 audioChannelConfig,
                 audioFormatEncoding,
                 actualRecordingBufferSize
@@ -672,6 +702,7 @@ class MainActivity : ComponentActivity() {
             localAudioRecord.release()
             outputStream?.close()
             isRecordingMantra = false
+            val file = File(storageDir, "$uniqueFileName.wav")
             if (file.exists() && file.length() == 44L) {
                 file.delete()
             }
@@ -876,6 +907,8 @@ class MainActivity : ComponentActivity() {
         Log.d("MainActivity", "Loading reference MFCCs...")
         val tempReferenceMFCCs = mutableMapOf<String, List<FloatArray>>()
 
+
+
         savedMantras.forEach { mantraName ->
             val file = File(storageDir, "$mantraName.wav")
             if (!file.exists() || file.length() <= 44 || !isValidWavFile(file)) {
@@ -902,7 +935,7 @@ class MainActivity : ComponentActivity() {
                     13,
                     40,
                     20f,
-                    4000f
+                    (sampleRate/ 2f)-100f
                 )
 
                 val customAudioStream = object : TarsosDSPAudioInputStream {
@@ -949,6 +982,8 @@ class MainActivity : ComponentActivity() {
 
         referenceMFCCs = tempReferenceMFCCs.filterValues { it.isNotEmpty() }
         Log.d("MainActivity", "Finished loading ${referenceMFCCs.size} reference MFCCs.")
+        // After loadReferenceMFCCs()
+        Log.d("MFCC", "Loaded reference MFCCs: ${referenceMFCCs.keys}")
     }
 
     private fun calculateCosineSimilarity(vec1: FloatArray, vec2: FloatArray): Float {
