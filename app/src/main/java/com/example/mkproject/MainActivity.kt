@@ -16,9 +16,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.mkproject.javaPackages.MantraRecognizer
+import com.example.mkproject.ui.theme.MkprojectTheme
 
 private const val TAG = "MantraMatchApp"
 
@@ -27,7 +29,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         Log.d(TAG, "MainActivity onCreate")
         setContent {
-            MantraMatchApp()
+            MkprojectTheme {
+                MantraMatchApp()
+            }
         }
     }
 }
@@ -331,5 +335,87 @@ fun MantraMatchApp() {
                 }
             }
         )
+    }
+}
+@Preview(showBackground = true)
+@Composable
+fun MantraMatchAppPreview() {
+    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(text = "Mantra Match", style = MaterialTheme.typography.headlineMedium)
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(text = "Status: Stopped")
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(text = "Matches: 0")
+            Spacer(modifier = Modifier.height(16.dp))
+
+            var expanded by remember { mutableStateOf(false) }
+            Box {
+                TextButton(onClick = { expanded = true }) {
+                    Text("Select Mantra")
+                }
+                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                    listOf("Mantra1", "Mantra2", "Mantra3").forEach { mantra ->
+                        DropdownMenuItem(
+                            text = { Text(mantra) },
+                            onClick = { expanded = false }
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+
+            var matchLimit by remember { mutableStateOf(TextFieldValue("10")) }
+            OutlinedTextField(
+                value = matchLimit,
+                onValueChange = { matchLimit = it },
+                label = { Text("Match Limit") },
+                isError = matchLimit.text.toIntOrNull()?.let { it <= 0 } ?: true
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+
+            var similarityThreshold by remember { mutableStateOf(TextFieldValue("0.7")) }
+            OutlinedTextField(
+                value = similarityThreshold,
+                onValueChange = { similarityThreshold = it },
+                label = { Text("Similarity Threshold (0.0-1.0)") },
+                isError = similarityThreshold.text.toFloatOrNull()?.let { it < 0.0f || it > 1.0f } ?: true
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Button(onClick = {}, enabled = true) {
+                Text("Start Listening")
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+
+            var mantraName by remember { mutableStateOf(TextFieldValue("")) }
+            OutlinedTextField(
+                value = mantraName,
+                onValueChange = { mantraName = it },
+                label = { Text("Mantra Name") },
+                isError = mantraName.text.trim().isEmpty()
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Button(onClick = {}, enabled = true) {
+                Text("Record")
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Button(onClick = {}, enabled = false) {
+                Text("Stop Recording")
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Button(onClick = {}, enabled = false) {
+                Text("Delete Selected")
+            }
+        }
     }
 }

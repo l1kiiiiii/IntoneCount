@@ -15,11 +15,6 @@ android {
         versionCode = 1
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        externalNativeBuild {
-            cmake {
-                cppFlags += ""
-            }
-        }
     }
 
     buildTypes {
@@ -37,14 +32,9 @@ android {
         targetCompatibility = JavaVersion.VERSION_18
     }
 
-    // REMOVE THIS BLOCK:
-    // kotlinOptions {
-    //     jvmTarget = "18"
-    // }
-
     buildFeatures {
         compose = true
-        buildConfig=true
+        buildConfig = true
     }
 }
 
@@ -71,6 +61,6 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
 
-    // Use local TarsosDSP JAR
+    // TarsosDSP for audio processing
     implementation(files("libs/TarsosDSP-Android-latest.jar"))
 }
