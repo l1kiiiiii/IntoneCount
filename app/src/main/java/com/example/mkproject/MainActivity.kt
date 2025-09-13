@@ -1,1055 +1,347 @@
 package com.example.mkproject
 
 import android.Manifest
-import android.annotation.SuppressLint
-import android.app.AlertDialog
-import android.app.AppOpsManager
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.content.Context
-import android.content.Intent
 import android.content.pm.PackageManager
-import android.media.AudioFormat
-import android.media.AudioManager
-import android.media.AudioRecord
-import android.media.MediaRecorder
-import android.media.ToneGenerator
-import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.provider.Settings
 import android.util.Log
-import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import be.tarsos.dsp.AudioDispatcher
-import be.tarsos.dsp.AudioEvent
-import be.tarsos.dsp.AudioProcessor
-import be.tarsos.dsp.io.android.AndroidAudioInputStream
-import be.tarsos.dsp.mfcc.MFCC
-import be.tarsos.dsp.io.TarsosDSPAudioFormat
-import be.tarsos.dsp.io.TarsosDSPAudioInputStream
-import com.example.mkproject.ui.theme.MainScreen
-import com.example.mkproject.ui.theme.MkprojectTheme
-import java.io.File
-import java.io.FileInputStream
-import java.io.FileNotFoundException
-import java.io.FileOutputStream
-import java.io.IOException
-import java.io.InputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
-import kotlin.jvm.java
-import kotlin.math.pow
-import kotlin.math.sqrt
-import android.os.Process
+import com.example.mkproject.javaPackages.MantraRecognizer
 
+private const val TAG = "MantraMatchApp"
 
 class MainActivity : ComponentActivity() {
-
-    // App logic variables
-    private var isRecognizingMantra by mutableStateOf(false)
-    private var isRecordingMantra by mutableStateOf(false)
-    private val matchCount = AtomicInteger(0)
-    private var matchLimit by mutableIntStateOf(0)
-    private var targetMantra by mutableStateOf("")
-    private var lastProcessedAudio: FloatArray? = null
-    private var referenceMFCCs: Map<String, List<FloatArray>> = emptyMap()
-
-    // Audio processing variables
-    private var audioRecord: AudioRecord? = null
-    private var audioDispatcher: AudioDispatcher? = null
-    private var dispatcherThread: Thread? = null
-    private var recordingThread: Thread? = null
-    private val stopRecordingFlag = AtomicBoolean(false)
-
-    // Constants for audio processing
-    private val sampleRate = 48000 // 48kHz is standard for TarsosDSP, but we use 48000 for consistency with Android
-    private val audioFormatEncoding = AudioFormat.ENCODING_PCM_16BIT
-    private val audioChannelConfig = AudioFormat.CHANNEL_IN_MONO
-
-    // Buffer size for AudioRecord
-    private val audioRecordMinBufferSize: Int by lazy {
-        val size = AudioRecord.getMinBufferSize(sampleRate, audioChannelConfig, audioFormatEncoding)
-        if (size <= 0) {
-            Log.e(
-                "MainActivity",
-                "Invalid min buffer size for 48kHz: $size, defaulting to a larger size like 4096 or 8192"
-            )
-            // For 48kHz, PCM_16BIT, MONO, a common min buffer might be around 3840 bytes.
-            // It's good to use a multiple of your processing buffer if possible, or at least a safe default.
-            8192
-        }else {
-            size
-        }
-    }
-    private fun downsample48kTo16k(input: ShortArray): ShortArray {
-        val downsampled = ShortArray(input.size / 3)
-        for (i in downsampled.indices) {
-            downsampled[i] = input[i * 3]
-        }
-        return downsampled
-    }
-    private val actualRecordingBufferSize: Int by lazy {
-        val minSize = audioRecordMinBufferSize * 2
-        val powerOfTwo = listOf(2048, 4096, 8192, 16384).firstOrNull { it >= minSize } ?: 8192
-        Log.d("MainActivity", "AudioRecord buffer size (48kHz): min=$audioRecordMinBufferSize, chosen=$powerOfTwo")
-        powerOfTwo
-    }
-
-    // TarsosDSP buffer sizes (power of 2 for FFT)
-    private val tarsosProcessingBufferSizeSamples = 2048
-    private val tarsosProcessingOverlapSamples = tarsosProcessingBufferSizeSamples / 2
-
-    // Storage and permissions
-    private val storageDir: File by lazy {
-        File(filesDir, "mantras").also {
-            if (!it.exists() && !it.mkdirs()) {
-                Log.e("MainActivity", "Failed to create storage directory: ${it.absolutePath}")
-                runOnUiThread {
-                    Toast.makeText(this, "Failed to create storage directory.", Toast.LENGTH_LONG).show()
-                }
-            }
-        }
-    }
-    private val inbuiltMantraName = "testhello"
-    private val savedMantras: List<String>
-        get() {
-            val files = storageDir.listFiles()
-                ?.filter { it.extension == "wav" && isValidWavFile(it) }
-                ?.map { it.nameWithoutExtension }
-                ?.sorted()
-                ?: emptyList()
-            return files.ifEmpty {
-                Log.d(
-                    "MainActivity",
-                    "No valid WAV files found in storage, including inbuilt mantra"
-                )
-                emptyList()
-            }
-        }
-
-    private val recordAudioLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
-        if (isGranted) {
-            Log.d("MainActivity", "RECORD_AUDIO permission granted")
-        } else {
-            Toast.makeText(this, "Microphone permission denied", Toast.LENGTH_SHORT).show()
+    companion object {
+        init {
+            System.loadLibrary("mantra_matcher")
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        val channel = NotificationChannel(
-            "recording_channel",
-            "Recording Service",
-            NotificationManager.IMPORTANCE_LOW
-        )
-        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-
-        // Copy inbuilt mantra from assets to storageDir
-        copyInbuiltMantraToStorage()
-
+        Log.d(TAG, "MainActivity onCreate")
         setContent {
-            MkprojectTheme {
-                var matchLimitText by remember { mutableStateOf("") }
-                MainScreen(
-                    mantras = savedMantras,
-                    matchLimitText = matchLimitText,
-                    onMatchLimitTextChange = { matchLimitText = it },
-                    onRecordMantraClick = { mantraName -> recordMantra(mantraName) },
-                    onStartStopClick = { targetMantraName, matchLimitText ->
-                        if (isRecognizingMantra) {
-                            stopListening()
-                        } else {
-                            if (targetMantraName.isBlank()) {
-                                Toast.makeText(this@MainActivity, "Please select a recorded mantra.", Toast.LENGTH_SHORT).show()
-                                return@MainScreen
-                            }
-                            matchLimit = matchLimitText.toIntOrNull() ?: 0
-                            if (matchLimit <= 0) {
-                                Toast.makeText(this@MainActivity, "Please enter a valid match limit.", Toast.LENGTH_SHORT).show()
-                                return@MainScreen
-                            }
-                            targetMantra = targetMantraName
-                            matchCount.set(0)
-                            isRecognizingMantra = true
-                            startListeningWithDelay()
-                        }
-                    },
-                    onStopRecordingClick = { stopRecordingMantra() },
-                    onDeleteMantraClick = { mantraName -> deleteMantra(mantraName) },
-                    matchCount = matchCount.get(),
-                    processingStatus = when {
-                        isRecognizingMantra -> "Listening for mantra..."
-                        isRecordingMantra -> "Recording mantra..."
-                        else -> "Stopped"
-                    }
-                )
-            }
+            MantraMatchApp()
         }
-        checkPermissionAndStart()
-        loadReferenceMFCCs()
+    }
+}
+
+@Composable
+fun MantraMatchApp() {
+    Log.d(TAG, "MantraMatchApp Composable executing")
+    val context = LocalContext.current
+    val recognizer = remember {
+        Log.d(TAG, "Initializing MantraRecognizer")
+        MantraRecognizer(context)
     }
 
-    private fun disableBatteryOptimizations() {
-        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
-        intent.data = Uri.parse("package:$packageName")
-        startActivity(intent)
-    }
+    var status by rememberSaveable { mutableStateOf("Stopped") }
+    var matchCount by rememberSaveable { mutableIntStateOf(0) }
+    var savedMantras by rememberSaveable { mutableStateOf(listOf<String>()) }
+    var selectedMantra by rememberSaveable { mutableStateOf("") }
+    var mantraNameText by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
+    var matchLimitTFV by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("10")) }
+    var similarityThresholdTFV by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("0.7")) }
 
+    var showAlarm by remember { mutableStateOf(false) }
+    var errorMessage by remember { mutableStateOf("") }
+    var showError by remember { mutableStateOf(false) }
+    var isRecognizing by rememberSaveable { mutableStateOf(false) }
+    var isRecording by rememberSaveable { mutableStateOf(false) }
 
-    fun loadWavToFloatArray(file: File): FloatArray {
-        val input = FileInputStream(file)
-        input.skip(44) // Skip WAV header
-        val bytes = input.readBytes()
-        val floats = FloatArray(bytes.size / 2)
-        val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
-        for (i in floats.indices) {
-            floats[i] = buffer.short.toFloat() / Short.MAX_VALUE
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        Log.d(TAG, "Permission result received. Granted: $isGranted")
+        if (!isGranted) {
+            errorMessage = "Microphone permission denied. Please enable it in settings."
+            showError = true
+            Log.w(TAG, "Microphone permission denied by user.")
         }
-        input.close()
-        return floats
     }
 
-    private fun copyInbuiltMantraToStorage() {
-        val inbuiltMantraName = "testhello"
-        val inbuiltFile = File(storageDir, "$inbuiltMantraName.wav")
-        // storageDir is filesDir/mantras
-        // inbuiltMantraName is "testhello"
-        Log.d("MainActivity_Copy", "Target inbuilt file path: ${inbuiltFile.absolutePath}")
-
-        // Check 1: Does the 'mantras' directory exist?
-        if (!storageDir.exists()) {
-            Log.e("MainActivity_Copy", "Storage directory ${storageDir.absolutePath} does NOT exist. Attempting to create.")
-            if (!storageDir.mkdirs()) {
-                Log.e("MainActivity_Copy", "FAILED to create storage directory ${storageDir.absolutePath}.")
-                // Post toast or handle error appropriately, as file copy will fail
-                runOnUiThread {
-                    Toast.makeText(this, "Critical: Failed to create app data directory.", Toast.LENGTH_LONG).show()
-                }
-                return // Cannot proceed
-            } else {
-                Log.d("MainActivity_Copy", "Storage directory ${storageDir.absolutePath} created successfully.")
-            }
+    LaunchedEffect(Unit, key2 = "permissionCheck") {
+        Log.d(TAG, "LaunchedEffect: Checking/Requesting RECORD_AUDIO permission")
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         } else {
-            Log.d("MainActivity_Copy", "Storage directory ${storageDir.absolutePath} already exists.")
-        }
-
-        // Check 2: If the file already exists, is it valid? (Your existing logic is good)
-        if (inbuiltFile.exists()) {
-            Log.d("MainActivity_Copy", "Inbuilt file ${inbuiltFile.name} already exists. Validating...")
-            if (isValidWavFile(inbuiltFile)) {
-                Log.d("MainActivity_Copy", "Inbuilt mantra $inbuiltMantraName already exists and is valid. No copy needed.")
-                return
-            } else {
-                Log.w("MainActivity_Copy", "Inbuilt file ${inbuiltFile.name} exists but is INVALID. Will attempt to overwrite.")
-                // Optionally delete it first to ensure a clean copy, though FileOutputStream should overwrite
-                // inbuiltFile.delete()
-            }
-        } else {
-            Log.d("MainActivity_Copy", "Inbuilt file ${inbuiltFile.name} does not exist. Proceeding with copy.")
-        }
-
-        var assetInputStream: InputStream? = null
-        var fileOutputStream: FileOutputStream? = null
-        try {
-            Log.d("MainActivity_Copy", "Attempting to open asset: 'testhello.wav'")
-            // Verify asset exists by listing (more robust check)
-            val assetFiles = assets.list("") // Lists files/dirs in root of assets
-            val assetPathForTestHello = "testhello.wav" // Assuming it's directly in assets root
-
-            Log.d("AssetCheck", "Assets: ${assetFiles?.joinToString()}")
-
-            if (assetFiles == null || !assetFiles.contains(assetPathForTestHello)) {
-                Log.e("MainActivity_Copy", "Asset '$assetPathForTestHello' NOT FOUND in assets root. Listing: ${assetFiles?.joinToString()}")
-                // Also check subdirectories if it might be there, e.g., assets.list("sounds")
-                // For now, assuming it's in the root.
-                runOnUiThread {
-                    Toast.makeText(this, "Error: Inbuilt mantra source file missing from app package.", Toast.LENGTH_LONG).show()
-                }
-                return // Critical error, cannot copy
-            }
-            Log.d("MainActivity_Copy", "Asset '$assetPathForTestHello' confirmed in assets listing.")
-
-            assetInputStream = assets.open(assetPathForTestHello) // Or just "testhello.wav"
-            Log.d("MainActivity_Copy", "Asset 'testhello.wav' opened successfully.")
-
-            fileOutputStream = FileOutputStream(inbuiltFile) // This will create the file if it doesn't exist, or overwrite
-            Log.d("MainActivity_Copy", "FileOutputStream for ${inbuiltFile.name} opened.")
-
-            assetInputStream.copyTo(fileOutputStream)
-            Log.d("MainActivity_Copy", "Finished copying asset to ${inbuiltFile.absolutePath}. File size: ${inbuiltFile.length()}")
-
-            if (!isValidWavFile(inbuiltFile)) {
-                Log.e("MainActivity_Copy", "Copied inbuilt mantra is INVALID: ${inbuiltFile.name}. Deleting.")
-                inbuiltFile.delete() // Clean up invalid file
-                throw IOException("Invalid WAV format for inbuilt mantra after copy.")
-            }
-            Log.d("MainActivity_Copy", "Copied inbuilt mantra ${inbuiltFile.name} is VALID.")
-
-        } catch (e: FileNotFoundException) { // Specifically for assets.open()
-            Log.e("MainActivity_Copy", "Failed to copy inbuilt mantra: ASSET 'testhello.wav' NOT FOUND.", e)
-            runOnUiThread {
-                Toast.makeText(this, "Failed to load inbuilt mantra: Source file missing.", Toast.LENGTH_LONG).show()
-            }
-        } catch (e: IOException) {
-            Log.e("MainActivity_Copy", "Failed to copy inbuilt mantra due to IOException: ${e.message}", e)
-            runOnUiThread {
-                Toast.makeText(this, "Failed to load inbuilt mantra: I/O error.", Toast.LENGTH_LONG).show()
-            }
-            // Clean up potentially partially written file
-            if (inbuiltFile.exists()) {
-                inbuiltFile.delete()
-            }
-        } catch (e: Exception) {
-            Log.e("MainActivity_Copy", "Unexpected error copying inbuilt mantra: ${e.message}", e)
-            runOnUiThread {
-                Toast.makeText(this, "Failed to load inbuilt mantra: ${e.message}", Toast.LENGTH_LONG).show()
-            }
-            if (inbuiltFile.exists()) {
-                inbuiltFile.delete()
-            }
-        } finally {
-            try {
-                assetInputStream?.close()
-            } catch (ioe: IOException) {
-                Log.w("MainActivity_Copy", "Error closing asset input stream", ioe)
-            }
-            try {
-                fileOutputStream?.close()
-            } catch (ioe: IOException) {
-                Log.w("MainActivity_Copy", "Error closing file output stream", ioe)
-            }
-            Log.d("MainActivity_Copy", "copyInbuiltMantraToStorage finished execution.")
+            Log.d(TAG, "LaunchedEffect: RECORD_AUDIO permission already granted.")
         }
     }
 
-    @SuppressLint("MissingPermission")
-    private fun startListeningWithDelay() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            Log.w("MainActivity", "Microphone permission missing")
-            Toast.makeText(this, "Microphone permission required.", Toast.LENGTH_SHORT).show()
-            isRecognizingMantra = false
-            return
-        }
+    LaunchedEffect(Unit, key2 = "loadMantras") {
+        Log.d(TAG, "LaunchedEffect: Loading saved mantras")
+        recognizer.loadSavedMantras()
+        savedMantras = recognizer.savedMantras
+        Log.d(TAG, "LaunchedEffect: Saved mantras loaded: $savedMantras")
+    }
 
-        Handler(Looper.getMainLooper()).postDelayed({
-            if (!isRecognizingMantra) {
-                Log.d("MainActivity", "Recognition cancelled before start")
-                return@postDelayed
+    LaunchedEffect(recognizer) {
+        Log.d(TAG, "LaunchedEffect: Setting MantraRecognizer listener")
+        recognizer.setListener(object : MantraRecognizer.MantraListener {
+            override fun onStatusUpdate(newStatus: String) {
+                Log.d(TAG, "MantraListener: onStatusUpdate - New status: $newStatus")
+                status = newStatus
             }
-
-            if (actualRecordingBufferSize <= 0 || actualRecordingBufferSize % 2 != 0) {
-                Log.e("MainActivity", "Invalid AudioRecord buffer size: $actualRecordingBufferSize")
-                Toast.makeText(this, "Invalid audio buffer configuration.", Toast.LENGTH_SHORT).show()
-                isRecognizingMantra = false
-                return@postDelayed
+            override fun onMatchCountUpdate(count: Int) {
+                Log.d(TAG, "MantraListener: onMatchCountUpdate - Count: $count")
+                matchCount = count
             }
+            override fun onAlarmTriggered() {
+                Log.d(TAG, "MantraListener: onAlarmTriggered")
+                showAlarm = true
+            }
+            override fun onError(error: String) {
+                Log.e(TAG, "MantraListener: onError - Error: $error")
+                errorMessage = error
+                showError = true
+            }
+            override fun onMantrasUpdated() {
+                Log.d(TAG, "MantraListener: onMantrasUpdated - Reloading mantras")
+                savedMantras = recognizer.savedMantras
+                Log.d(TAG, "MantraListener: Mantras reloaded: $savedMantras")
+            }
+            override fun onRecognizingStateChanged(recognizing: Boolean) {
+                Log.d(TAG, "MantraListener: onRecognizingStateChanged - Recognizing: $recognizing")
+                isRecognizing = recognizing
+            }
+            override fun onRecordingStateChanged(recording: Boolean) {
+                Log.d(TAG, "MantraListener: onRecordingStateChanged - Recording: $recording")
+                isRecording = recording
+            }
+        })
+    }
 
-            try {
-                audioRecord = AudioRecord(
-                    MediaRecorder.AudioSource.MIC,
-                    sampleRate,
-                    audioChannelConfig,
-                    audioFormatEncoding,
-                    actualRecordingBufferSize
-                )
-                if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                    Log.e("MainActivity", "AudioRecord initialization failed. State: ${audioRecord?.state}")
-                    Toast.makeText(this, "Failed to initialize audio recording.", Toast.LENGTH_SHORT).show()
-                    isRecognizingMantra = false
-                    audioRecord?.release()
-                    audioRecord = null
-                    return@postDelayed
+    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Text(text = "Mantra Match", style = MaterialTheme.typography.headlineMedium)
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(text = "Status: $status")
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(text = "Matches: $matchCount")
+            Spacer(modifier = Modifier.height(16.dp))
+
+            var expanded by remember { mutableStateOf(false) }
+            Box {
+                TextButton(onClick = {
+                    Log.d(TAG, "Select Mantra button clicked, expanding dropdown.")
+                    expanded = true
+                }) {
+                    Text(selectedMantra.ifEmpty { "Select Mantra" })
                 }
-
-                Log.d("MainActivity", "AudioRecord initialized: sampleRate=$sampleRate, bufferSize=$actualRecordingBufferSize, state=${audioRecord?.state}")
-
-                val tarsosDspAudioFormat = TarsosDSPAudioFormat(sampleRate.toFloat(), 16, 1, true, false)
-                val audioStream = AndroidAudioInputStream(audioRecord!!, tarsosDspAudioFormat)
-                Log.d("MainActivity", "AndroidAudioInputStream initialized 48khz")
-
-                Log.d("MainActivity", "Audio stream frame length: ${audioStream.frameLength}")
-
-                audioDispatcher = AudioDispatcher(
-                    audioStream,
-                    tarsosProcessingBufferSizeSamples,
-                    tarsosProcessingOverlapSamples
-                )
-
-                val mfcc = MFCC(
-                    tarsosProcessingBufferSizeSamples,
-                    sampleRate.toFloat(),
-                    13,
-                    40,
-                    20f,
-                    4000f
-                )
-                audioDispatcher?.addAudioProcessor(mfcc)
-                audioDispatcher?.addAudioProcessor(object : AudioProcessor {
-                    override fun process(audioEvent: AudioEvent): Boolean {
-                        Log.d("MainActivity", "AudioEvent: bufferSize=${audioEvent.bufferSize}, byteBuffer=${audioEvent.byteBuffer.size}")
-                        val mfccs = mfcc.mfcc
-                        if (mfccs.isEmpty() || mfccs.size != 13) {
-                            Log.w("MainActivity", "Invalid MFCCs: size=${mfccs.size}")
-                            return true
-                        }
-                        lastProcessedAudio = mfccs.copyOf()
-                        if (targetMantra.isNotEmpty() && referenceMFCCs.containsKey(targetMantra)) {
-                            val refMfccList = referenceMFCCs[targetMantra]
-                            if (refMfccList != null && refMfccList.isNotEmpty()) {
-                                val similarity = calculateCosineSimilarity(mfccs, refMfccList[0])
-                                if (similarity > 0.9) {
-                                    val currentCount = matchCount.incrementAndGet()
-                                    Log.d("MainActivity", "Match detected, count: $currentCount, Similarity: $similarity")
-                                    if (currentCount >= matchLimit) {
-                                        runOnUiThread { triggerAlarm() }
-                                    }
-                                }
-                            } else {
-                                Log.w("MainActivity", "No reference MFCCs for $targetMantra")
+                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                    savedMantras.forEach { mantra ->
+                        DropdownMenuItem(
+                            text = { Text(mantra) },
+                            onClick = {
+                                Log.d(TAG, "Mantra selected from dropdown: $mantra")
+                                selectedMantra = mantra
+                                expanded = false
                             }
-                        }
-                        return true
-                    }
-                    override fun processingFinished() {
-                        Log.d("MainActivity", "AudioProcessor finished")
-                    }
-                })
-
-                audioRecord?.startRecording()
-                if (audioRecord?.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-                    Log.e("MainActivity", "AudioRecord failed to start recording. State: ${audioRecord?.recordingState}")
-                    throw IllegalStateException("AudioRecord not recording")
-                }
-
-                dispatcherThread = Thread {
-                    try {
-                        Log.d("MainActivity", "AudioDispatcher starting with buffer: $tarsosProcessingBufferSizeSamples, overlap: $tarsosProcessingOverlapSamples")
-                        audioDispatcher?.run()
-                        Log.d("MainActivity", "AudioDispatcher completed normally")
-                    } catch (e: ArrayIndexOutOfBoundsException) {
-                        Log.e("MainActivity", "Buffer error in AudioDispatcher", e)
-                        runOnUiThread {
-                            isRecognizingMantra = false
-                            Toast.makeText(this@MainActivity, "Audio processing failed: buffer mismatch.", Toast.LENGTH_SHORT).show()
-                        }
-                    } catch (e: IllegalStateException) {
-                        Log.e("MainActivity", "AudioDispatcher failed due to illegal state", e)
-                        runOnUiThread {
-                            isRecognizingMantra = false
-                            Toast.makeText(this@MainActivity, "Audio processing failed: invalid state.", Toast.LENGTH_SHORT).show()
-                        }
-                    } catch (e: Exception) {
-                        Log.e("MainActivity", "Unexpected error in AudioDispatcher thread", e)
-                        runOnUiThread {
-                            isRecognizingMantra = false
-                            Toast.makeText(this@MainActivity, "Error processing audio: ${e.message}", Toast.LENGTH_SHORT).show()
-                        }
-                    } finally {
-                        stopListening()
+                        )
                     }
                 }
-                dispatcherThread?.name = "AudioDispatcherThread"
-                dispatcherThread?.start()
-                Log.d("MainActivity", "Started listening.")
-            } catch (e: Exception) {
-                Log.e("MainActivity", "Error initializing AudioDispatcher", e)
-                audioRecord?.release()
-                audioRecord = null
-                isRecognizingMantra = false
-                runOnUiThread {
-                    Toast.makeText(this@MainActivity, "Failed to start listening: ${e.message}", Toast.LENGTH_SHORT).show()
-                }
             }
-        }, 500)
-    }
+            Spacer(modifier = Modifier.height(16.dp))
 
-    private fun stopListening() {
-        if (!isRecognizingMantra && audioRecord == null && audioDispatcher == null && dispatcherThread == null) {
-            Log.d("MainActivity", "StopListening called but nothing to stop.")
-            return
-        }
-        isRecognizingMantra = false
-        Log.d("MainActivity", "Stopping listening...")
-
-        dispatcherThread?.interrupt()
-        try {
-            dispatcherThread?.join(1000)
-            Log.d("MainActivity", "Dispatcher thread joined")
-        } catch (e: InterruptedException) {
-            Thread.currentThread().interrupt()
-            Log.e("MainActivity", "Interrupted while joining dispatcher thread", e)
-        }
-        dispatcherThread = null
-
-        audioDispatcher?.stop()
-        audioDispatcher = null
-
-        if (audioRecord?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
-            try {
-                audioRecord?.stop()
-                Log.d("MainActivity", "AudioRecord stopped")
-            } catch (e: IllegalStateException) {
-                Log.e("MainActivity", "Failed to stop AudioRecord", e)
-            }
-        }
-        audioRecord?.release()
-        audioRecord = null
-        Log.d("MainActivity", "Stopped listening completely.")
-    }
-
-    private fun checkPermissionAndStart() {
-        val permissionState = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-        Log.d("MainActivity", "RECORD_AUDIO permission state: $permissionState")
-        if (permissionState != PackageManager.PERMISSION_GRANTED) {
-            recordAudioLauncher.launch(Manifest.permission.RECORD_AUDIO)
-        }
-    }
-
-    private fun showPermissionAlert() {
-        AlertDialog.Builder(this)
-            .setTitle("Permission Required")
-            .setMessage("Microphone permission is required to record and analyze mantras. Please grant the permission in app settings.")
-            .setPositiveButton("OK", null)
-            .setNegativeButton("Settings") { _, _ ->
-                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                    data = Uri.fromParts("package", packageName, null)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                startActivity(intent)
-            }
-            .show()
-    }
-
-    private fun isMicrophoneOpAllowed(): Boolean {
-        val appOps = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
-        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            appOps.unsafeCheckOpNoThrow("android:record_audio", Process.myUid(), packageName)
-        } else {
-            appOps.checkOpNoThrow("android:record_audio", Process.myUid(), packageName)
-        }
-        Log.d("MainActivity", "AppOps OP_RECORD_AUDIO mode: $mode")
-        return mode == AppOpsManager.MODE_ALLOWED
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun recordMantra(mantraName: String) {
-        if (!isMicrophoneOpAllowed()) {
-            Log.e("MainActivity", "Microphone operation blocked by AppOps")
-            Toast.makeText(this, "Microphone access blocked by system. Check app settings.", Toast.LENGTH_LONG).show()
-            return
-        }
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            Toast.makeText(this, "Microphone permission required for recording.", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        if (isRecognizingMantra || isRecordingMantra) {
-            Toast.makeText(this, "Already processing audio, please stop first.", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        if (mantraName.isBlank() || mantraName == inbuiltMantraName) {
-            Toast.makeText(this, if (mantraName.isBlank()) "Mantra name cannot be empty." else "Cannot use inbuilt mantra name '$inbuiltMantraName'.", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val sanitizedMantraName = mantraName.replace("[^a-zA-Z0-9_-]".toRegex(), "_")
-        var file = File(storageDir, "$sanitizedMantraName.wav")
-        var uniqueFileName = sanitizedMantraName
-        var counter = 1
-        while (file.exists()) {
-            uniqueFileName = "${sanitizedMantraName}_$counter"
-            file = File(storageDir, "$uniqueFileName.wav")
-            counter++
-        }
-
-        if (actualRecordingBufferSize <= 0) {
-            Log.e("MainActivity", "Invalid AudioRecord buffer size: $actualRecordingBufferSize")
-            Toast.makeText(this, "Cannot record: Invalid buffer size.", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        var localAudioRecord: AudioRecord? = null
-        try {
-            localAudioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                sampleRate,//48000 hz
-                audioChannelConfig,
-                audioFormatEncoding,
-                actualRecordingBufferSize
+            OutlinedTextField(
+                value = matchLimitTFV,
+                onValueChange = {
+                    matchLimitTFV = it
+                    Log.d(TAG, "Match Limit OutlinedTextField onValueChange: ${it.text}")
+                },
+                label = { Text("Match Limit") },
+                isError = matchLimitTFV.text.toIntOrNull()?.let { it <= 0 } ?: true
             )
-            if (localAudioRecord.state != AudioRecord.STATE_INITIALIZED) {
-                Log.e("MainActivity", "Failed to initialize AudioRecord for mantra. State: ${localAudioRecord.state}")
-                Toast.makeText(this, "Failed to initialize audio recording.", Toast.LENGTH_SHORT).show()
-                localAudioRecord.release()
-                return
-            }
-            localAudioRecord.startRecording()
-            if (localAudioRecord.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-                Log.e("MainActivity", "AudioRecord failed to start recording. State: ${localAudioRecord.recordingState}")
-                Toast.makeText(this, "Failed to start audio recording.", Toast.LENGTH_SHORT).show()
-                localAudioRecord.release()
-                return
-            }
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Exception initializing AudioRecord for mantra recording", e)
-            Toast.makeText(this, "Error initializing recording.", Toast.LENGTH_SHORT).show()
-            localAudioRecord?.release()
-            return
-        }
+            Spacer(modifier = Modifier.height(16.dp))
 
-        isRecordingMantra = true
-        stopRecordingFlag.set(false)
-        var outputStream: FileOutputStream? = null
-        var localAudioDispatcher: AudioDispatcher?
-
-        try {
-            outputStream = FileOutputStream(file)
-            writeWavHeader(outputStream, channels = 1, sampleRate = sampleRate, bitsPerSample = 16)
-
-            val tarsosDspAudioFormat = TarsosDSPAudioFormat(sampleRate.toFloat(), 16, 1, true, false)
-            val audioStream = AndroidAudioInputStream(localAudioRecord, tarsosDspAudioFormat)
-            Log.d("MainActivity", "AndroidAudioInputStream initialized for recording")
-
-            localAudioDispatcher = AudioDispatcher(
-                audioStream,
-                tarsosProcessingBufferSizeSamples,
-                0
+            OutlinedTextField(
+                value = similarityThresholdTFV,
+                onValueChange = {
+                    similarityThresholdTFV = it
+                    Log.d(TAG, "Similarity Threshold OutlinedTextField onValueChange: ${it.text}")
+                },
+                label = { Text("Similarity Threshold (0.0-1.0)") },
+                isError = similarityThresholdTFV.text.toFloatOrNull()?.let { it < 0.0f || it > 1.0f } ?: true
             )
+            Spacer(modifier = Modifier.height(16.dp))
 
-            val currentAudioRecord = localAudioRecord
-            localAudioDispatcher.addAudioProcessor(object : AudioProcessor {
-                override fun process(audioEvent: AudioEvent): Boolean {
-                    if (stopRecordingFlag.get()) return false
-                    Log.d("MainActivity", "Recording buffer size: ${audioEvent.byteBuffer.size}")
-                    try {
-                        outputStream.write(audioEvent.byteBuffer, 0, audioEvent.byteBuffer.size)
-                    } catch (e: Exception) {
-                        Log.e("MainActivity", "Error writing to WAV file", e)
-                        currentAudioRecord.stop()
-                        localAudioDispatcher.stop()
-                        return false
-                    }
-                    return true
-                }
-                override fun processingFinished() {}
-            })
-
-            currentAudioRecord.startRecording()
-            recordingThread = Thread({
-                try {
-                    Log.d("MainActivity", "AudioDispatcher run (recording) started with buffer: $tarsosProcessingBufferSizeSamples, overlap: 0")
-                    localAudioDispatcher.run()
-                } catch (e: Exception) {
-                    Log.e("MainActivity", "Error in recording dispatcher thread", e)
-                } finally {
-                    try {
-                        currentAudioRecord.stop()
-                    } catch (e: IllegalStateException) {
-                        Log.e("MainActivity", "Error stopping AudioRecord in recording thread", e)
-                    }
-                    currentAudioRecord.release()
-
-                    val recordedDataSize = file.length() - 44
-                    try {
-                        outputStream.channel?.let { channel ->
-                            if (recordedDataSize > 0) {
-                                val chunkSize = recordedDataSize + 36
-                                channel.position(4)
-                                channel.write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(chunkSize.toInt()))
-                                channel.position(40)
-                                channel.write(ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(recordedDataSize.toInt()))
-                            }
-                        }
-                    } catch (e: Exception) {
-                        Log.e("MainActivity", "Error updating WAV header size", e)
-                    } finally {
-                        outputStream.close()
-                    }
-
-                    runOnUiThread {
-                        if (recordedDataSize > 0) {
-                            Toast.makeText(this@MainActivity, "Mantra recorded: $uniqueFileName", Toast.LENGTH_SHORT).show()
-                            loadReferenceMFCCs()
+            Button(
+                onClick = {
+                    Log.d(TAG, "Start/Stop Listening button clicked. Current isRecognizing: $isRecognizing")
+                    if (isRecognizing) {
+                        Log.d(TAG, "Attempting to stop recognition.")
+                        recognizer.stopRecognition()
+                    } else {
+                        val limit = matchLimitTFV.text.toIntOrNull() ?: 0
+                        val thresh = similarityThresholdTFV.text.toFloatOrNull() ?: 0.7f
+                        Log.d(TAG, "Attempting to start recognition. Mantra: $selectedMantra, Limit: $limit, Threshold: $thresh")
+                        if (selectedMantra.isEmpty()) {
+                            errorMessage = "Please select a mantra."
+                            showError = true
+                            Log.w(TAG, "Start recognition failed: No mantra selected.")
+                        } else if (limit <= 0) {
+                            errorMessage = "Please enter a valid match limit."
+                            showError = true
+                            Log.w(TAG, "Start recognition failed: Invalid match limit - $limit")
+                        } else if (thresh < 0.0f || thresh > 1.0f) {
+                            errorMessage = "Similarity threshold must be between 0.0 and 1.0."
+                            showError = true
+                            Log.w(TAG, "Start recognition failed: Invalid threshold - $thresh")
                         } else {
-                            if (file.exists()) file.delete()
-                            Toast.makeText(this@MainActivity, "Recording failed or was empty.", Toast.LENGTH_SHORT).show()
+                            recognizer.startRecognition(selectedMantra, limit, thresh)
                         }
-                        isRecordingMantra = false
                     }
-                }
-            }, "MantraRecordingThread")
-            recordingThread?.start()
-            Log.d("MainActivity", "Started mantra recording to file: ${file.name}")
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Error during mantra recording setup or execution", e)
-            Toast.makeText(this, "Error starting recording.", Toast.LENGTH_SHORT).show()
-            localAudioRecord.release()
-            outputStream?.close()
-            isRecordingMantra = false
-            val file = File(storageDir, "$uniqueFileName.wav")
-            if (file.exists() && file.length() == 44L) {
-                file.delete()
+                },
+                enabled = !isRecording && (isRecognizing || selectedMantra.isNotEmpty())
+            ) {
+                Text(if (isRecognizing) "Stop Listening" else "Start Listening")
             }
-        }
-    }
+            Spacer(modifier = Modifier.height(8.dp))
 
+            OutlinedTextField(
+                value = mantraNameText,
+                onValueChange = {
+                    mantraNameText = it
+                    Log.d(TAG, "Mantra Name OutlinedTextField onValueChange: $it")
+                },
+                label = { Text("Mantra Name") },
+                isError = mantraNameText.text.trim().isEmpty()
+            )
+            Spacer(modifier = Modifier.height(8.dp))
 
-    private fun stopRecordingMantra() {
-        if (isRecordingMantra) {
-            isRecordingMantra = false
-            stopRecordingFlag.set(true)
-            recordingThread?.interrupt()
-            recordingThread = null
-            Log.d("MainActivity", "Stopped recording mantra.")
-        }
-    }
-
-    private fun deleteMantra(mantraName: String) {
-        if (mantraName == inbuiltMantraName) {
-            Toast.makeText(this, "Cannot delete inbuilt mantra '$inbuiltMantraName'.", Toast.LENGTH_SHORT).show()
-            return
-        }
-        if (mantraName.isBlank()) {
-            Toast.makeText(this, "No mantra selected to delete.", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        val file = File(storageDir, "$mantraName.wav")
-        if (!file.exists()) {
-            Toast.makeText(this, "Mantra file not found.", Toast.LENGTH_SHORT).show()
-            return
-        }
-
-        try {
-            if (file.delete()) {
-                Toast.makeText(this, "Mantra '$mantraName' deleted.", Toast.LENGTH_SHORT).show()
-                loadReferenceMFCCs()
-            } else {
-                Toast.makeText(this, "Failed to delete mantra '$mantraName'.", Toast.LENGTH_SHORT).show()
-            }
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Error deleting mantra $mantraName", e)
-            Toast.makeText(this, "Error deleting mantra '$mantraName'.", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun writeWavHeader(outputStream: FileOutputStream, channels: Int, sampleRate: Int, bitsPerSample: Int) {
-        val byteRate = sampleRate * channels * bitsPerSample / 8
-        val blockAlign = channels * bitsPerSample / 8
-        val header = ByteArray(44)
-
-        header[0] = 'R'.code.toByte(); header[1] = 'I'.code.toByte(); header[2] = 'F'.code.toByte(); header[3] = 'F'.code.toByte()
-        header[4] = 0; header[5] = 0; header[6] = 0; header[7] = 0
-        header[8] = 'W'.code.toByte(); header[9] = 'A'.code.toByte(); header[10] = 'V'.code.toByte(); header[11] = 'E'.code.toByte()
-        header[12] = 'f'.code.toByte(); header[13] = 'm'.code.toByte(); header[14] = 't'.code.toByte(); header[15] = ' '.code.toByte()
-        header[16] = 16; header[17] = 0; header[18] = 0; header[19] = 0
-        header[20] = 1; header[21] = 0
-        header[22] = channels.toByte(); header[23] = 0
-        header[24] = (sampleRate and 0xff).toByte()
-        header[25] = ((sampleRate shr 8) and 0xff).toByte()
-        header[26] = ((sampleRate shr 16) and 0xff).toByte()
-        header[27] = ((sampleRate shr 24) and 0xff).toByte()
-        header[28] = (byteRate and 0xff).toByte()
-        header[29] = ((byteRate shr 8) and 0xff).toByte()
-        header[30] = ((byteRate shr 16) and 0xff).toByte()
-        header[31] = ((byteRate shr 24) and 0xff).toByte()
-        header[32] = blockAlign.toByte(); header[33] = 0
-        header[34] = bitsPerSample.toByte(); header[35] = 0
-        header[36] = 'd'.code.toByte(); header[37] = 'a'.code.toByte(); header[38] = 't'.code.toByte(); header[39] = 'a'.code.toByte()
-        header[40] = 0; header[41] = 0; header[42] = 0; header[43] = 0
-        outputStream.write(header)
-    }
-
-
-
-    private fun isValidWavFile(file: File): Boolean {
-        if (!file.exists() || file.length() < 44) { // Basic check for existence and minimum header size
-            Log.w("MainActivity", "File ${file.name} does not exist or too small to be WAV.")
-            return false
-        }
-        var fis: FileInputStream? = null
-        try {
-            fis = FileInputStream(file)
-            val header = ByteArray(44)
-            val bytesRead = fis.read(header, 0, 44)
-
-            if (bytesRead < 44) {
-                Log.w("MainActivity", "Could not read full 44-byte WAV header from ${file.name}.")
-                return false
-            }
-
-            // --- COMMON VALIDATION POINTS ---
-
-            // 1. "RIFF" chunk descriptor (Bytes 0-3)
-            if (!(header[0] == 'R'.code.toByte() && header[1] == 'I'.code.toByte() &&
-                        header[2] == 'F'.code.toByte() && header[3] == 'F'.code.toByte())) {
-                Log.w("MainActivity", "Invalid WAV file: ${file.name}, missing 'RIFF' marker. Found: ${header.sliceArray(0..3).map { it.toInt().toChar() }.joinToString("")}")
-                return false
-            }
-
-            // 2. "WAVE" format (Bytes 8-11)
-            if (!(header[8] == 'W'.code.toByte() && header[9] == 'A'.code.toByte() &&
-                        header[10] == 'V'.code.toByte() && header[11] == 'E'.code.toByte())) {
-                Log.w("MainActivity", "Invalid WAV file: ${file.name}, missing 'WAVE' marker. Found: ${header.sliceArray(8..11).map { it.toInt().toChar() }.joinToString("")}")
-                return false
-            }
-
-            // 3. "fmt " sub-chunk (Bytes 12-15)
-            if (!(header[12] == 'f'.code.toByte() && header[13] == 'm'.code.toByte() &&
-                        header[14] == 't'.code.toByte() && header[15] == ' '.code.toByte())) {
-                Log.w("MainActivity", "Invalid WAV file: ${file.name}, missing 'fmt ' marker. Found: ${header.sliceArray(12..15).map { it.toInt().toChar() }.joinToString("")}")
-                return false
-            }
-
-            // 4. AudioFormat (PCM = 1) (Bytes 20-21)
-            val audioFormat = ByteBuffer.wrap(header, 20, 2).order(ByteOrder.LITTLE_ENDIAN).short
-            if (audioFormat.toInt() != 1) { // 1 means PCM
-                Log.w("MainActivity", "Invalid WAV file: ${file.name}, unsupported audio format: $audioFormat (expected 1 for PCM).")
-                return false
-            }
-
-            // 5. NumChannels (e.g., Mono = 1) (Bytes 22-23)
-            val numChannels = ByteBuffer.wrap(header, 22, 2).order(ByteOrder.LITTLE_ENDIAN).short
-            // if (numChannels.toInt() != 1) { // Your app expects MONO
-            //     Log.w("MainActivity", "Invalid WAV file: ${file.name}, unexpected number of channels: $numChannels (expected 1).")
-            //     return false
-            // }
-            Log.d("MainActivity_WAV_Validate", "File: ${file.name}, Channels: $numChannels")
-
-
-            // 6. SampleRate (e.g., 16000 Hz) (Bytes 24-27)
-            val fileSampleRate = ByteBuffer.wrap(header, 24, 4).order(ByteOrder.LITTLE_ENDIAN).int
-            // if (fileSampleRate != this.sampleRate) { // this.sampleRate is your target 16000
-            //     Log.w("MainActivity", "Invalid WAV file: ${file.name}, unexpected sample rate: $fileSampleRate (expected ${this.sampleRate}).")
-            //     return false
-            // }
-            Log.d("MainActivity_WAV_Validate", "File: ${file.name}, Sample Rate: $fileSampleRate")
-
-            // 7. BitsPerSample (e.g., 16) (Bytes 34-35)
-            val bitsPerSample = ByteBuffer.wrap(header, 34, 2).order(ByteOrder.LITTLE_ENDIAN).short
-            // if (bitsPerSample.toInt() != 16) { // Your app expects 16-bit
-            //     Log.w("MainActivity", "Invalid WAV file: ${file.name}, unexpected bits per sample: $bitsPerSample (expected 16).")
-            //     return false
-            // }
-            Log.d("MainActivity_WAV_Validate", "File: ${file.name}, BitsPerSample: $bitsPerSample")
-
-
-            // 8. "data" sub-chunk (Bytes 36-39)
-            // This can sometimes be other chunks like "LIST" before "data"
-            // A more robust check would scan for "data"
-            var dataChunkOffset = 36
-            while (dataChunkOffset < header.size - 4) {
-                if (header[dataChunkOffset] == 'd'.code.toByte() && header[dataChunkOffset+1] == 'a'.code.toByte() &&
-                    header[dataChunkOffset+2] == 't'.code.toByte() && header[dataChunkOffset+3] == 'a'.code.toByte()) {
-                    Log.d("MainActivity_WAV_Validate", "Found 'data' chunk at offset $dataChunkOffset for ${file.name}")
-                    break // Found it
-                }
-                // If not 'data', skip this chunk: read its size (4 bytes) and advance
-                if (dataChunkOffset + 8 > header.size) break // Not enough space to read size
-                val chunkSize = ByteBuffer.wrap(header, dataChunkOffset + 4, 4).order(ByteOrder.LITTLE_ENDIAN).int
-                dataChunkOffset += (8 + chunkSize)
-                // Add padding if chunk size is odd
-                if (chunkSize % 2 != 0) {
-                    dataChunkOffset++
-                }
-            }
-            if (dataChunkOffset >= header.size -4 ) { // or a better check if not found
-                Log.w("MainActivity", "Invalid WAV file: ${file.name}, 'data' chunk not found where expected.")
-                // return false // Be careful with this check, data chunk is not always at byte 36
-            }
-
-
-            Log.i("MainActivity", "WAV file ${file.name} passed header validation.")
-            return true
-
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Error validating WAV file ${file.name}: ${e.message}", e)
-            return false
-        } finally {
-            try {
-                fis?.close()
-            } catch (_: IOException) {
-                // ignore
-            }
-        }
-    }
-
-
-
-    private fun List<FloatArray>.averageMfcc(): FloatArray {
-        if (isEmpty()) return FloatArray(13)
-        val result = FloatArray(first().size)
-        for (mfcc in this) {
-            for (i in mfcc.indices) {
-                result[i] += mfcc[i] / size
-            }
-        }
-        return result
-    }
-
-    private fun loadReferenceMFCCs() {
-        Log.d("MainActivity", "Loading reference MFCCs...")
-        val tempReferenceMFCCs = mutableMapOf<String, List<FloatArray>>()
-
-
-
-        savedMantras.forEach { mantraName ->
-            val file = File(storageDir, "$mantraName.wav")
-            if (!file.exists() || file.length() <= 44 || !isValidWavFile(file)) {
-                Log.w("MainActivity", "Skipping $mantraName: file missing, too small, or invalid")
-                return@forEach
-            }
-
-            var inputStream: FileInputStream? = null
-            var dispatcher: AudioDispatcher? = null
-            try {
-                Log.d("MainActivity", "Processing reference: $mantraName, fileSize=${file.length()}")
-                inputStream = FileInputStream(file)
-
-                if (inputStream.skip(44L) != 44L) {
-                    Log.e("MainActivity", "Could not skip WAV header for $mantraName")
-                    return@forEach
-                }
-
-                val audioFormat = TarsosDSPAudioFormat(sampleRate.toFloat(), 16, 1, true, false)
-                val mfccList = mutableListOf<FloatArray>()
-                val mfccProcessor = MFCC(
-                    tarsosProcessingBufferSizeSamples,
-                    sampleRate.toFloat(),
-                    13,
-                    40,
-                    20f,
-                    (sampleRate/ 2f)-100f
-                )
-
-                val customAudioStream = object : TarsosDSPAudioInputStream {
-                    override fun getFormat(): TarsosDSPAudioFormat = audioFormat
-                    override fun read(b: ByteArray, off: Int, len: Int): Int = inputStream.read(b, off, len)
-                    override fun skip(n: Long): Long = 0 // Header already skipped
-                    override fun close() = inputStream.close()
-                    override fun getFrameLength(): Long = (file.length() - 44) / 2 // 16-bit mono
-                }
-
-                dispatcher = AudioDispatcher(customAudioStream, tarsosProcessingBufferSizeSamples, tarsosProcessingOverlapSamples)
-                dispatcher.addAudioProcessor(mfccProcessor)
-                dispatcher.addAudioProcessor(object : AudioProcessor {
-                    override fun process(audioEvent: AudioEvent): Boolean {
-                        val mfccs = mfccProcessor.mfcc
-                        if (mfccs.isEmpty() || mfccs.size != 13) {
-                            Log.w("MainActivity", "Invalid MFCCs for $mantraName: size=${mfccs.size}")
-                            return true
-                        }
-                        mfccList.add(mfccs.copyOf())
-                        return true
+            Button(
+                onClick = {
+                    Log.d(TAG, "Record button clicked.")
+                    val name = mantraNameText.text.trim()
+                    if (name.isEmpty()) {
+                        errorMessage = "Please enter a valid mantra name."
+                        showError = true
+                        Log.w(TAG, "Record mantra failed: Mantra name is empty.")
+                    } else {
+                        Log.d(TAG, "Attempting to record mantra: $name")
+                        recognizer.recordMantra(name)
                     }
-                    override fun processingFinished() {}
-                })
+                },
+                enabled = !isRecognizing && !isRecording
+            ) {
+                Text(if(isRecording) "Recording..." else "Record")
+            }
+            Spacer(modifier = Modifier.height(8.dp))
 
-                dispatcher.run()
+            Button(
+                onClick = {
+                    Log.d(TAG, "Stop Recording button clicked.")
+                    recognizer.stopRecording()
+                },
+                enabled = isRecording
+            ) {
+                Text("Stop Recording")
+            }
+            Spacer(modifier = Modifier.height(8.dp))
 
-                if (mfccList.isNotEmpty()) {
-                    tempReferenceMFCCs[mantraName] = listOf(mfccList.averageMfcc())
-                    Log.d("MainActivity", "Loaded ${mfccList.size} MFCC frames for $mantraName, stored averaged")
-                } else {
-                    Log.w("MainActivity", "No MFCC frames extracted for $mantraName")
-                }
-            } catch (e: Exception) {
-                Log.e("MainActivity", "Error loading MFCC for $mantraName", e)
-                runOnUiThread {
-                    Toast.makeText(this@MainActivity, "Failed to process mantra: $mantraName", Toast.LENGTH_SHORT).show()
-                }
-            } finally {
-                inputStream?.close()
-                dispatcher?.stop()
+            Button(
+                onClick = {
+                    Log.d(TAG, "Delete Selected Mantra button clicked. Selected: $selectedMantra")
+                    if (selectedMantra.isEmpty()) {
+                        errorMessage = "Please select a mantra to delete."
+                        showError = true
+                        Log.w(TAG, "Delete mantra failed: No mantra selected.")
+                    } else {
+                        recognizer.deleteMantra(selectedMantra)
+                    }
+                },
+                enabled = !isRecognizing && !isRecording && selectedMantra.isNotEmpty()
+            ) {
+                Text("Delete Selected")
             }
         }
-
-        referenceMFCCs = tempReferenceMFCCs.filterValues { it.isNotEmpty() }
-        Log.d("MainActivity", "Finished loading ${referenceMFCCs.size} reference MFCCs.")
-        // After loadReferenceMFCCs()
-        Log.d("MFCC", "Loaded reference MFCCs: ${referenceMFCCs.keys}")
     }
 
-    private fun calculateCosineSimilarity(vec1: FloatArray, vec2: FloatArray): Float {
-        if (vec1.isEmpty() || vec2.isEmpty() || vec1.size != vec2.size) {
-            Log.w("CosineSimilarity", "Vectors are empty or have different sizes. vec1: ${vec1.size}, vec2: ${vec2.size}")
-            return 0f
-        }
-        var dotProduct = 0f
-        var norm1 = 0f
-        var norm2 = 0f
-        for (i in vec1.indices) {
-            dotProduct += vec1[i] * vec2[i]
-            norm1 += vec1[i].pow(2)
-            norm2 += vec2[i].pow(2)
-        }
-        val denominator = sqrt(norm1) * sqrt(norm2)
-        return if (denominator == 0f) 0f else dotProduct / denominator
-    }
-
-    @SuppressLint("MissingPermission")
-    private fun triggerAlarm() {
-        Log.d("MainActivity", "Triggering alarm. Match limit reached.")
-        val wasRecognizing = isRecognizingMantra
-        if (wasRecognizing) {
-            stopListening()
-        }
-
-        val toneGenerator = ToneGenerator(AudioManager.STREAM_MUSIC, 100)
-        toneGenerator.startTone(ToneGenerator.TONE_CDMA_ALERT_CALL_GUARD, 300)
-        Handler(Looper.getMainLooper()).postDelayed({ toneGenerator.release() }, 500)
-
-        AlertDialog.Builder(this)
-            .setTitle("Mantra Limit Reached")
-            .setMessage("The target number of mantra recitations ($matchLimit) has been reached.")
-            .setPositiveButton("OK & Continue") { _, _ ->
-                matchCount.set(0)
-                if (targetMantra.isNotBlank() && matchLimit > 0) {
-                    isRecognizingMantra = true
-                    startListeningWithDelay()
-                } else {
-                    isRecognizingMantra = false
+    if (showAlarm) {
+        Log.d(TAG, "Showing Alarm dialog for mantra: $selectedMantra")
+        AlertDialog(
+            onDismissRequest = {
+                Log.d(TAG, "Alarm AlertDialog: Dismissed (outside click or back press)")
+                showAlarm = false
+            },
+            title = { Text("Mantra Limit Reached") },
+            text = { Text("Reached the limit for '$selectedMantra'.") },
+            confirmButton = {
+                Button(onClick = {
+                    Log.d(TAG, "Alarm AlertDialog: OK & Continue clicked.")
+                    showAlarm = false
+                    recognizer.resetMatchCount()
+                    val limit = matchLimitTFV.text.toIntOrNull() ?: 0
+                    val thresh = similarityThresholdTFV.text.toFloatOrNull() ?: 0.7f
+                    if (selectedMantra.isNotEmpty() && (limit > 0)) {
+                        Log.d(TAG, "Alarm AlertDialog: Restarting recognition for $selectedMantra, Limit: $limit, Threshold: $thresh")
+                        recognizer.startRecognition(
+                            selectedMantra,
+                            limit,
+                            thresh
+                        )
+                    } else {
+                        Log.w(TAG, "Alarm AlertDialog: Not restarting recognition. SelectedMantra: $selectedMantra, Limit: $limit")
+                    }
+                }) {
+                    Text("OK & Continue")
+                }
+            },
+            dismissButton = {
+                Button(onClick = {
+                    Log.d(TAG, "Alarm AlertDialog: Stop clicked.")
+                    showAlarm = false
+                    recognizer.resetMatchCount()
+                }) {
+                    Text("Stop")
                 }
             }
-            .setNegativeButton("Stop") { _, _ ->
-                matchCount.set(0)
+        )
+    }
+
+    if (showError) {
+        Log.d(TAG, "Showing Error dialog: $errorMessage")
+        AlertDialog(
+            onDismissRequest = {
+                Log.d(TAG, "Error AlertDialog: Dismissed (outside click or back press)")
+                showError = false
+            },
+            title = { Text("Error") },
+            text = { Text(errorMessage) },
+            confirmButton = {
+                Button(onClick = {
+                    Log.d(TAG, "Error AlertDialog: OK clicked.")
+                    showError = false
+                }) {
+                    Text("OK")
+                }
             }
-            .setCancelable(false)
-            .show()
+        )
     }
+}
 
-    override fun onPause() {
-        super.onPause()
-        if (isRecognizingMantra && audioRecord != null && audioDispatcher != null) {
-            Log.d("MainActivity", "onPause: Stopping listening (recognition) due to activity pause.")
-            stopListening()
-        }
-        if (isRecordingMantra) {
-            Log.d("MainActivity", "onPause: Stopping recording due to activity pause.")
-            stopRecordingMantra()
-        }
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        Log.d("MainActivity", "onDestroy: Ensuring everything is stopped and released.")
-        stopListening()
-        stopRecordingMantra()
-    }
+@Preview(showBackground = true)
+@Composable
+fun MantraMatchAppPreview() {
+    MantraMatchApp()
 }
