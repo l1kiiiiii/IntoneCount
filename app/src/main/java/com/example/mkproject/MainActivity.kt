@@ -16,7 +16,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.mkproject.javaPackages.MantraRecognizer
@@ -24,12 +23,6 @@ import com.example.mkproject.javaPackages.MantraRecognizer
 private const val TAG = "MantraMatchApp"
 
 class MainActivity : ComponentActivity() {
-    companion object {
-        init {
-            System.loadLibrary("mantra_matcher")
-        }
-    }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Log.d(TAG, "MainActivity onCreate")
@@ -52,10 +45,15 @@ fun MantraMatchApp() {
     var matchCount by rememberSaveable { mutableIntStateOf(0) }
     var savedMantras by rememberSaveable { mutableStateOf(listOf<String>()) }
     var selectedMantra by rememberSaveable { mutableStateOf("") }
-    var mantraNameText by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
-    var matchLimitTFV by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("10")) }
-    var similarityThresholdTFV by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("0.7")) }
-
+    var mantraNameText by rememberSaveable(stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue(""))
+    }
+    var matchLimitTFV by rememberSaveable(stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue("10"))
+    }
+    var similarityThresholdTFV by rememberSaveable(stateSaver = TextFieldValue.Saver) {
+        mutableStateOf(TextFieldValue("0.7"))
+    }
     var showAlarm by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf("") }
     var showError by remember { mutableStateOf(false) }
@@ -222,7 +220,7 @@ fun MantraMatchApp() {
                 value = mantraNameText,
                 onValueChange = {
                     mantraNameText = it
-                    Log.d(TAG, "Mantra Name OutlinedTextField onValueChange: $it")
+                    Log.d(TAG, "Mantra Name OutlinedTextField onValueChange: ${it.text}")
                 },
                 label = { Text("Mantra Name") },
                 isError = mantraNameText.text.trim().isEmpty()
@@ -244,7 +242,7 @@ fun MantraMatchApp() {
                 },
                 enabled = !isRecognizing && !isRecording
             ) {
-                Text(if(isRecording) "Recording..." else "Record")
+                Text(if (isRecording) "Recording..." else "Record")
             }
             Spacer(modifier = Modifier.height(8.dp))
 
@@ -293,13 +291,9 @@ fun MantraMatchApp() {
                     recognizer.resetMatchCount()
                     val limit = matchLimitTFV.text.toIntOrNull() ?: 0
                     val thresh = similarityThresholdTFV.text.toFloatOrNull() ?: 0.7f
-                    if (selectedMantra.isNotEmpty() && (limit > 0)) {
+                    if (selectedMantra.isNotEmpty() && limit > 0) {
                         Log.d(TAG, "Alarm AlertDialog: Restarting recognition for $selectedMantra, Limit: $limit, Threshold: $thresh")
-                        recognizer.startRecognition(
-                            selectedMantra,
-                            limit,
-                            thresh
-                        )
+                        recognizer.startRecognition(selectedMantra, limit, thresh)
                     } else {
                         Log.w(TAG, "Alarm AlertDialog: Not restarting recognition. SelectedMantra: $selectedMantra, Limit: $limit")
                     }
@@ -338,10 +332,4 @@ fun MantraMatchApp() {
             }
         )
     }
-}
-
-@Preview(showBackground = true)
-@Composable
-fun MantraMatchAppPreview() {
-    MantraMatchApp()
 }
